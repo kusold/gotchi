@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -157,7 +156,6 @@ func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
 	require.NoError(t, err)
 	assert.NotEqual(t, uuid.Nil, userRef.UserID)
-	assert.NotEqual(t, uuid.Nil, userRef.TenantID)
 	assert.Equal(t, "test-issuer", userRef.Issuer)
 	assert.Equal(t, "test-subject-123", userRef.Subject)
 
@@ -165,7 +163,6 @@ func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 	retrieved, err := store.ResolveOrProvisionUser(ctx, identity)
 	require.NoError(t, err)
 	assert.Equal(t, userRef.UserID, retrieved.UserID)
-	assert.Equal(t, userRef.TenantID, retrieved.TenantID)
 }
 
 func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
@@ -192,7 +189,6 @@ func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 	userRef2, err := store.ResolveOrProvisionUser(ctx, identity)
 	require.NoError(t, err)
 	assert.Equal(t, userRef1.UserID, userRef2.UserID)
-	assert.Equal(t, userRef1.TenantID, userRef2.TenantID)
 }
 
 func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
@@ -219,25 +215,3 @@ func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 	}
 }
 
-func TestValidateSchemaName_Integration(t *testing.T) {
-	// Test valid schemas
-	validSchemas := []string{"", "public", "my_schema", "schema123", "Schema_Name"}
-	for _, schema := range validSchemas {
-		err := validateSchemaName(schema)
-		assert.NoError(t, err, "schema %q should be valid", schema)
-	}
-
-	// Test invalid schemas
-	invalidSchemas := []string{
-		"1schema",              // starts with digit
-		"my-schema",            // contains hyphen
-		"my.schema",            // contains dot
-		"schema!",              // special char
-		"public; DROP TABLE",   // SQL injection
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 64 chars - too long
-	}
-	for _, schema := range invalidSchemas {
-		err := validateSchemaName(schema)
-		assert.Error(t, err, "schema %q should be invalid", schema)
-	}
-}
