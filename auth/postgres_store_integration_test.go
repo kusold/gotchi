@@ -9,11 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	dockertest "github.com/ory/dockertest/v4"
+	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kusold/gotchi/db"
+	gotchimigrations "github.com/kusold/gotchi/migrations"
 )
 
 var (
@@ -40,6 +42,11 @@ func TestMain(m *testing.M) {
 			"POSTGRES_PASSWORD=secret",
 			"POSTGRES_DB=testdb",
 		},
+	}, func(config *docker.HostConfig) {
+		config.AutoRemove = true
+		config.RestartPolicy = docker.RestartPolicy{
+			Name: "no",
+		}
 	})
 	if err != nil {
 		fmt.Printf("Could not start postgres container: %s\n", err)
@@ -52,7 +59,7 @@ func TestMain(m *testing.M) {
 
 	// Wait for PostgreSQL to be ready
 	ctx := context.Background()
-	if err = pool.Retry(ctx, 30*time.Second, func() error {
+	if err = pool.Retry(func() error {
 		var err error
 		dbPool, err = pgxpool.New(ctx, databaseURL)
 		if err != nil {
@@ -65,8 +72,23 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Run migrations
-	mgr := db.NewManager(dbPool, "public")
+	// Run migrations using v2 API
+	mgr := db.NewManager(db.Config{
+		DatabaseURL: databaseURL,
+		Schema:      "public",
+	})
+	mgr.AddMigrationSource(db.MigrationSource{
+		FS:  gotchimigrations.FS,
+		Dir: ".",
+	})
+	
+	if err := mgr.Connect(ctx); err != nil {
+		fmt.Printf("Could not connect: %s\n", err)
+		_ = dbPool.Close()
+		_ = resource.Close()
+		os.Exit(1)
+	}
+	
 	if err := mgr.RunMigrations(ctx); err != nil {
 		fmt.Printf("Could not run migrations: %s\n", err)
 		_ = dbPool.Close()
