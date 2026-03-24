@@ -21,12 +21,34 @@ type PostgresIdentityStore struct {
 	cfg  PostgresStoreConfig
 }
 
-func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) *PostgresIdentityStore {
+func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*PostgresIdentityStore, error) {
 	conf := cfg
 	if conf.DefaultTenantName == "" {
 		conf.DefaultTenantName = "Default"
 	}
-	return &PostgresIdentityStore{pool: pool, cfg: conf}
+	if err := validateSchemaName(conf.Schema); err != nil {
+		return nil, err
+	}
+	return &PostgresIdentityStore{pool: pool, cfg: conf}, nil
+}
+
+func validateSchemaName(schema string) error {
+	if schema == "" {
+		return nil
+	}
+	if len(schema) > 63 {
+		return fmt.Errorf("invalid schema name: must be 63 characters or less")
+	}
+	// Schema names must be alphanumeric + underscore, and can't start with a digit
+	for i, r := range schema {
+		if i == 0 && (r >= '0' && r <= '9') {
+			return fmt.Errorf("invalid schema name: cannot start with a digit")
+		}
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("invalid schema name: contains invalid characters")
+		}
+	}
+	return nil
 }
 
 func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, identity Identity) (UserRef, error) {

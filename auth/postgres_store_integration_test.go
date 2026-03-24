@@ -109,40 +109,58 @@ func TestMain(m *testing.M) {
 }
 
 func TestNewPostgresIdentityStore_Success(t *testing.T) {
-	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Default Tenant",
 	})
+		require.NoError(t, err)
+		require.NotNil(t, store)
+	require.NoError(t, err)
 	require.NotNil(t, store)
 }
 
 func TestNewPostgresIdentityStore_ValidatesSchema(t *testing.T) {
-	ctx := context.Background()
+	// Test invalid schema names at constructor level
+	invalidSchemas := []string{
+		"1schema",              // starts with digit
+		"my-schema",            // contains hyphen
+		"my.schema",            // contains dot
+		"schema!",              // special char
+		"public; DROP TABLE",   // SQL injection
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 64 chars - too long
+	}
+	for _, schema := range invalidSchemas {
+		_, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+			Schema:            schema,
+			DefaultTenantName: "Default Tenant",
+		})
+		require.Error(t, err, "schema %q should be rejected", schema)
+		assert.Contains(t, err.Error(), "invalid schema name")
+	}
 
-	// Test invalid schema name (SQL injection attempt) via ResolveOrProvisionUser
-	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
-		Schema:            "public; DROP TABLE users;--",
-		DefaultTenantName: "Default Tenant",
-	})
-
-	// This should fail when trying to use the invalid schema
-	_, err := store.ResolveOrProvisionUser(ctx, Identity{
-		Issuer:            "test",
-		Subject:           "test",
-		Email:             "test@example.com",
-		EmailVerified:     true,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid schema name")
+	// Test valid schemas
+	validSchemas := []string{"", "public", "my_schema", "schema123", "Schema_Name"}
+	for _, schema := range validSchemas {
+		store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+			Schema:            schema,
+			DefaultTenantName: "Default Tenant",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, store)
+		require.NoError(t, err, "schema %q should be valid", schema)
+		require.NotNil(t, store)
+	}
 }
 
 func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 	ctx := context.Background()
 
-	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Test Tenant",
 	})
+		require.NoError(t, err)
+		require.NotNil(t, store)
 
 	// Create a new user
 	identity := Identity{
@@ -168,10 +186,12 @@ func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 	ctx := context.Background()
 
-	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Test Tenant 2",
 	})
+		require.NoError(t, err)
+		require.NotNil(t, store)
 
 	// Create user first time
 	identity := Identity{
@@ -194,10 +214,12 @@ func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 	ctx := context.Background()
 
-	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Test Tenant 3",
 	})
+		require.NoError(t, err)
+		require.NotNil(t, store)
 
 	// Create multiple users
 	for i := 0; i < 5; i++ {
