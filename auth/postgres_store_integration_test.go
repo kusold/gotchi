@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kusold/gotchi/db"
-	gotchimigrations "github.com/kusold/gotchi/migrations"
+	"github.com/kusold/gotchi/migrations"
 )
 
 var (
@@ -78,20 +78,24 @@ func TestMain(m *testing.M) {
 		Schema:      "public",
 	})
 	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  gotchimigrations.FS,
+		FS:  migrations.Core(),
+		Dir: ".",
+	})
+	mgr.AddMigrationSource(db.MigrationSource{
+		FS:  migrations.Auth(),
 		Dir: ".",
 	})
 	
 	if err := mgr.Connect(ctx); err != nil {
 		fmt.Printf("Could not connect: %s\n", err)
-		_ = dbPool.Close()
+		dbPool.Close()
 		_ = resource.Close()
 		os.Exit(1)
 	}
 	
 	if err := mgr.RunMigrations(ctx); err != nil {
 		fmt.Printf("Could not run migrations: %s\n", err)
-		_ = dbPool.Close()
+		dbPool.Close()
 		_ = resource.Close()
 		os.Exit(1)
 	}
@@ -100,31 +104,34 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup
-	_ = dbPool.Close()
+	dbPool.Close()
 	_ = resource.Close()
 	os.Exit(code)
 }
 
 func TestNewPostgresIdentityStore_Success(t *testing.T) {
-	ctx := context.Background()
-
-	store, err := NewPostgresIdentityStore(ctx, PostgresStoreConfig{
+	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Default Tenant",
-		Pool:              dbPool,
 	})
-	require.NoError(t, err)
 	require.NotNil(t, store)
 }
 
 func TestNewPostgresIdentityStore_ValidatesSchema(t *testing.T) {
 	ctx := context.Background()
 
-	// Test invalid schema name (SQL injection attempt)
-	_, err := NewPostgresIdentityStore(ctx, PostgresStoreConfig{
+	// Test invalid schema name (SQL injection attempt) via ResolveOrProvisionUser
+	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public; DROP TABLE users;--",
 		DefaultTenantName: "Default Tenant",
-		Pool:              dbPool,
+	})
+
+	// This should fail when trying to use the invalid schema
+	_, err := store.ResolveOrProvisionUser(ctx, Identity{
+		Issuer:            "test",
+		Subject:           "test",
+		Email:             "test@example.com",
+		EmailVerified:     true,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid schema name")
@@ -133,12 +140,10 @@ func TestNewPostgresIdentityStore_ValidatesSchema(t *testing.T) {
 func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 	ctx := context.Background()
 
-	store, err := NewPostgresIdentityStore(ctx, PostgresStoreConfig{
+	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Test Tenant",
-		Pool:              dbPool,
 	})
-	require.NoError(t, err)
 
 	// Create a new user
 	identity := Identity{
@@ -166,12 +171,10 @@ func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 	ctx := context.Background()
 
-	store, err := NewPostgresIdentityStore(ctx, PostgresStoreConfig{
+	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Test Tenant 2",
-		Pool:              dbPool,
 	})
-	require.NoError(t, err)
 
 	// Create user first time
 	identity := Identity{
@@ -195,12 +198,10 @@ func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 	ctx := context.Background()
 
-	store, err := NewPostgresIdentityStore(ctx, PostgresStoreConfig{
+	store := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: "Test Tenant 3",
-		Pool:              dbPool,
 	})
-	require.NoError(t, err)
 
 	// Create multiple users
 	for i := 0; i < 5; i++ {
