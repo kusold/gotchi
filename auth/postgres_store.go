@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kusold/gotchi/internal/db"
@@ -68,7 +70,7 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 	}
 
 	// Check if error is "no rows" - if so, create new user
-	if err.Error() != "no rows in result set" {
+	if err != pgx.ErrNoRows {
 		return UserRef{}, fmt.Errorf("failed to query user: %w", err)
 	}
 
@@ -158,7 +160,7 @@ func (s *PostgresIdentityStore) firstTenantOrCreate(ctx context.Context) (uuid.U
 	}
 
 	// Check if error is "no rows"
-	if err.Error() != "no rows in result set" {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.UUID{}, fmt.Errorf("failed to query tenant: %w", err)
 	}
 
