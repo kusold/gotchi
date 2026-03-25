@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 	// Start PostgreSQL container
 	resource, err = pool.RunWithOptions(&dockertest.RunOptions{
 		Repository: "postgres",
-		Tag:        "15-alpine",
+		Tag:        "18-alpine",
 		Env: []string{
 			"POSTGRES_PASSWORD=secret",
 			"POSTGRES_DB=testdb",
