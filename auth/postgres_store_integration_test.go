@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
+	dockertest "github.com/ory/dockertest/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,40 +18,37 @@ import (
 )
 
 var (
-	pool     *dockertest.Pool
-	resource *dockertest.Resource
-	dbPool   *pgxpool.Pool
+	pool   dockertest.ClosablePool
+	dbPool *pgxpool.Pool
 )
 
 // testUsersCount is the number of users to create in multi-user tests
 const testUsersCount = 5
 
 func TestMain(m *testing.M) {
+	ctx := context.Background()
 	var err error
 
-	// Connect to Docker
-	pool, err = dockertest.NewPool("")
+	// Connect to Docker using v4 API
+	pool, err = dockertest.NewPool(ctx, "",
+		dockertest.WithMaxWait(2*time.Minute),
+	)
 	if err != nil {
 		fmt.Printf("Could not connect to docker: %s\n", err)
 		os.Exit(1)
 	}
 
-	// Start PostgreSQL container
-	resource, err = pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "postgres",
-		Tag:        "18-alpine",
-		Env: []string{
+	// Start PostgreSQL container using v4 functional options
+	resource, err := pool.Run(ctx, "postgres",
+		dockertest.WithTag("18-alpine"),
+		dockertest.WithEnv([]string{
 			"POSTGRES_PASSWORD=secret",
 			"POSTGRES_DB=testdb",
-		},
-	}, func(config *docker.HostConfig) {
-		config.AutoRemove = true
-		config.RestartPolicy = docker.RestartPolicy{
-			Name: "no",
-		}
-	})
+		}),
+	)
 	if err != nil {
 		fmt.Printf("Could not start postgres container: %s\n", err)
+		pool.Close(ctx)
 		os.Exit(1)
 	}
 
@@ -59,9 +56,8 @@ func TestMain(m *testing.M) {
 	hostPort := resource.GetHostPort("5432/tcp")
 	databaseURL := fmt.Sprintf("postgres://postgres:secret@%s/testdb?sslmode=disable", hostPort)
 
-	// Wait for PostgreSQL to be ready
-	ctx := context.Background()
-	if err = pool.Retry(func() error {
+	// Wait for PostgreSQL to be ready - v4 API requires context and timeout
+	if err = pool.Retry(ctx, 30*time.Second, func() error {
 		var err error
 		dbPool, err = pgxpool.New(ctx, databaseURL)
 		if err != nil {
@@ -70,11 +66,11 @@ func TestMain(m *testing.M) {
 		return dbPool.Ping(ctx)
 	}); err != nil {
 		fmt.Printf("Could not connect to postgres: %s\n", err)
-		cleanup()
+		pool.Close(ctx)
 		os.Exit(1)
 	}
 
-	// Run migrations using v2 API
+	// Run migrations
 	mgr := db.NewManager(db.Config{
 		DatabaseURL: databaseURL,
 		Schema:      "public",
@@ -90,32 +86,30 @@ func TestMain(m *testing.M) {
 
 	if err := mgr.Connect(ctx); err != nil {
 		fmt.Printf("Could not connect: %s\n", err)
-		cleanup()
+		cleanup(ctx)
 		os.Exit(1)
 	}
 
 	if err := mgr.RunMigrations(ctx); err != nil {
 		fmt.Printf("Could not run migrations: %s\n", err)
-		cleanup()
+		cleanup(ctx)
 		os.Exit(1)
 	}
 
 	// Run tests
 	code := m.Run()
 
-	// Cleanup
-	cleanup()
+	// Cleanup - pool.Close removes all tracked containers/networks
+	cleanup(ctx)
 	os.Exit(code)
 }
 
 // cleanup releases Docker and database resources
-func cleanup() {
+func cleanup(ctx context.Context) {
 	if dbPool != nil {
 		dbPool.Close()
 	}
-	if resource != nil {
-		_ = resource.Close()
-	}
+	pool.Close(ctx)
 }
 
 // newTestStore creates a PostgresIdentityStore with a unique tenant name for test isolation
