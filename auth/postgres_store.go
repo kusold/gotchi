@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const (
+	// schemaNameMaxLen is PostgreSQL's maximum identifier length
+	schemaNameMaxLen = 63
+
+	// errSchemaPrefix is the prefix for all schema validation errors
+	errSchemaPrefix = "invalid schema name: "
+)
+
+// schemaNameRegex validates PostgreSQL schema names:
+// - Must start with a letter or underscore
+// - Can contain letters, digits, and underscores
+// - Max 63 characters (enforced separately)
+var schemaNameRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 type PostgresStoreConfig struct {
 	Schema            string
@@ -36,17 +51,11 @@ func validateSchemaName(schema string) error {
 	if schema == "" {
 		return nil
 	}
-	if len(schema) > 63 {
-		return fmt.Errorf("invalid schema name: must be 63 characters or less")
+	if len(schema) > schemaNameMaxLen {
+		return fmt.Errorf(errSchemaPrefix+"must be %d characters or less", schemaNameMaxLen)
 	}
-	// Schema names must be alphanumeric + underscore, and can't start with a digit
-	for i, r := range schema {
-		if i == 0 && (r >= '0' && r <= '9') {
-			return fmt.Errorf("invalid schema name: cannot start with a digit")
-		}
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-			return fmt.Errorf("invalid schema name: contains invalid characters")
-		}
+	if !schemaNameRegex.MatchString(schema) {
+		return fmt.Errorf(errSchemaPrefix + "must start with a letter or underscore and contain only alphanumeric characters and underscores")
 	}
 	return nil
 }
