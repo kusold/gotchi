@@ -23,6 +23,9 @@ var (
 	dbPool   *pgxpool.Pool
 )
 
+// testUsersCount is the number of users to create in multi-user tests
+const testUsersCount = 5
+
 func TestMain(m *testing.M) {
 	var err error
 
@@ -67,7 +70,7 @@ func TestMain(m *testing.M) {
 		return dbPool.Ping(ctx)
 	}); err != nil {
 		fmt.Printf("Could not connect to postgres: %s\n", err)
-		_ = resource.Close()
+		cleanup()
 		os.Exit(1)
 	}
 
@@ -84,18 +87,16 @@ func TestMain(m *testing.M) {
 		FS:  migrations.Auth(),
 		Dir: ".",
 	})
-	
+
 	if err := mgr.Connect(ctx); err != nil {
 		fmt.Printf("Could not connect: %s\n", err)
-		dbPool.Close()
-		_ = resource.Close()
+		cleanup()
 		os.Exit(1)
 	}
-	
+
 	if err := mgr.RunMigrations(ctx); err != nil {
 		fmt.Printf("Could not run migrations: %s\n", err)
-		dbPool.Close()
-		_ = resource.Close()
+		cleanup()
 		os.Exit(1)
 	}
 
@@ -103,19 +104,33 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup
-	dbPool.Close()
-	_ = resource.Close()
+	cleanup()
 	os.Exit(code)
 }
 
-func TestNewPostgresIdentityStore_Success(t *testing.T) {
+// cleanup releases Docker and database resources
+func cleanup() {
+	if dbPool != nil {
+		dbPool.Close()
+	}
+	if resource != nil {
+		_ = resource.Close()
+	}
+}
+
+// newTestStore creates a PostgresIdentityStore with a unique tenant name for test isolation
+func newTestStore(t *testing.T, tenantName string) *PostgresIdentityStore {
 	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
 		Schema:            "public",
-		DefaultTenantName: "Default Tenant",
+		DefaultTenantName: tenantName,
 	})
-		require.NoError(t, err)
-		require.NotNil(t, store)
 	require.NoError(t, err)
+	require.NotNil(t, store)
+	return store
+}
+
+func TestNewPostgresIdentityStore_Success(t *testing.T) {
+	store := newTestStore(t, "Default Tenant")
 	require.NotNil(t, store)
 }
 
@@ -145,8 +160,6 @@ func TestNewPostgresIdentityStore_ValidatesSchema(t *testing.T) {
 			Schema:            schema,
 			DefaultTenantName: "Default Tenant",
 		})
-		require.NoError(t, err)
-		require.NotNil(t, store)
 		require.NoError(t, err, "schema %q should be valid", schema)
 		require.NotNil(t, store)
 	}
@@ -154,13 +167,7 @@ func TestNewPostgresIdentityStore_ValidatesSchema(t *testing.T) {
 
 func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 	ctx := context.Background()
-
-	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
-		Schema:            "public",
-		DefaultTenantName: "Test Tenant",
-	})
-		require.NoError(t, err)
-		require.NotNil(t, store)
+	store := newTestStore(t, "Test Tenant NewUser")
 
 	// Create a new user
 	identity := Identity{
@@ -185,13 +192,7 @@ func TestResolveOrProvisionUser_NewUser(t *testing.T) {
 
 func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 	ctx := context.Background()
-
-	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
-		Schema:            "public",
-		DefaultTenantName: "Test Tenant 2",
-	})
-		require.NoError(t, err)
-		require.NotNil(t, store)
+	store := newTestStore(t, "Test Tenant ExistingUser")
 
 	// Create user first time
 	identity := Identity{
@@ -213,16 +214,10 @@ func TestResolveOrProvisionUser_ExistingUser(t *testing.T) {
 
 func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 	ctx := context.Background()
+	store := newTestStore(t, "Test Tenant MultipleUsers")
 
-	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
-		Schema:            "public",
-		DefaultTenantName: "Test Tenant 3",
-	})
-		require.NoError(t, err)
-		require.NotNil(t, store)
-
-	// Create multiple users
-	for i := 0; i < 5; i++ {
+	// Create multiple users to verify the store handles concurrent-ish user creation
+	for i := 0; i < testUsersCount; i++ {
 		identity := Identity{
 			Issuer:            fmt.Sprintf("issuer-%d", i),
 			Subject:           fmt.Sprintf("subject-%d", i),
@@ -236,4 +231,3 @@ func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 		assert.NotEqual(t, uuid.Nil, userRef.UserID)
 	}
 }
-
