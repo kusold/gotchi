@@ -3,132 +3,32 @@ package auth
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
-	dockertest "github.com/ory/dockertest/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kusold/gotchi/db"
-	"github.com/kusold/gotchi/migrations"
+	"github.com/kusold/gotchi/internal/testutil"
 )
 
-var (
-	pool   dockertest.ClosablePool
-	dbPool *pgxpool.Pool
-)
+var testDB *testutil.TestDB
 
 func TestMain(m *testing.M) {
-	ctx := context.Background()
-	var err error
-
-	databaseURL, err := setupTestDB(ctx)
-	if err != nil {
-		fmt.Printf("Failed to setup test database: %s\n", err)
-		os.Exit(1)
+	testDB = testutil.SetupTestDB(m)
+	if testDB == nil {
+		fmt.Println("Failed to setup test database")
+		return
 	}
+	defer testDB.Close()
 
-	if err := runMigrations(ctx, databaseURL); err != nil {
-		fmt.Printf("Failed to run migrations: %s\n", err)
-		cleanup(ctx)
-		os.Exit(1)
-	}
-
-	// Run tests
-	code := m.Run()
-
-	// Cleanup - pool.Close removes all tracked containers/networks
-	cleanup(ctx)
-	os.Exit(code)
-}
-
-// setupTestDB starts a PostgreSQL container using dockertest and returns the database URL
-func setupTestDB(ctx context.Context) (string, error) {
-	var err error
-
-	// Connect to Docker using v4 API
-	pool, err = dockertest.NewPool(ctx, "",
-		dockertest.WithMaxWait(2*time.Minute),
-	)
-	if err != nil {
-		return "", fmt.Errorf("could not connect to docker: %w", err)
-	}
-
-	// Start PostgreSQL container using v4 functional options
-	resource, err := pool.Run(ctx, "postgres",
-		dockertest.WithTag("18-alpine"),
-		dockertest.WithEnv([]string{
-			"POSTGRES_PASSWORD=secret",
-			"POSTGRES_DB=testdb",
-		}),
-	)
-	if err != nil {
-		pool.Close(ctx)
-		return "", fmt.Errorf("could not start postgres container: %w", err)
-	}
-
-	// Get host:port
-	hostPort := resource.GetHostPort("5432/tcp")
-	databaseURL := fmt.Sprintf("postgres://postgres:secret@%s/testdb?sslmode=disable", hostPort)
-
-	// Wait for PostgreSQL to be ready - v4 API requires context and timeout
-	if err = pool.Retry(ctx, 30*time.Second, func() error {
-		var err error
-		dbPool, err = pgxpool.New(ctx, databaseURL)
-		if err != nil {
-			return err
-		}
-		return dbPool.Ping(ctx)
-	}); err != nil {
-		pool.Close(ctx)
-		return "", fmt.Errorf("could not connect to postgres: %w", err)
-	}
-
-	return databaseURL, nil
-}
-
-// runMigrations connects to the database and runs all migrations
-func runMigrations(ctx context.Context, databaseURL string) error {
-	mgr := db.NewManager(db.Config{
-		DatabaseURL: databaseURL,
-		Schema:      "public",
-	})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  migrations.Core(),
-		Dir: ".",
-	})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  migrations.Auth(),
-		Dir: ".",
-	})
-
-	if err := mgr.Connect(ctx); err != nil {
-		return fmt.Errorf("could not connect: %w", err)
-	}
-
-	if err := mgr.RunMigrations(ctx); err != nil {
-		return fmt.Errorf("could not run migrations: %w", err)
-	}
-
-	return nil
-}
-
-// cleanup releases Docker and database resources
-func cleanup(ctx context.Context) {
-	if dbPool != nil {
-		dbPool.Close()
-	}
-	pool.Close(ctx)
+	m.Run()
 }
 
 // newTestStore creates a PostgresIdentityStore with a unique tenant name for test isolation
 func newTestStore(t *testing.T, tenantName string) *PostgresIdentityStore {
-	store, err := NewPostgresIdentityStore(dbPool, PostgresStoreConfig{
+	store, err := NewPostgresIdentityStore(testDB.Pool, PostgresStoreConfig{
 		Schema:            "public",
 		DefaultTenantName: tenantName,
 	})
@@ -243,11 +143,11 @@ func TestResolveOrProvisionUser_EmptyFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-				// Current implementation allows empty issuer/subject fields.
-				// This test verifies that behavior is accepted without error.
-				_, err := store.ResolveOrProvisionUser(ctx, tt.identity)
-				require.NoError(t, err, "empty fields should be allowed (current behavior)")
-			})
+			// Current implementation allows empty issuer/subject fields.
+			// This test verifies that behavior is accepted without error.
+			_, err := store.ResolveOrProvisionUser(ctx, tt.identity)
+			require.NoError(t, err, "empty fields should be allowed (current behavior)")
+		})
 	}
 }
 
