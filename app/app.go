@@ -108,7 +108,11 @@ func (a *Application) Run(ctx context.Context) error {
 
 	identityStore := a.cfg.Auth.IdentityStore
 	if a.cfg.Auth.OIDC.Enabled && identityStore == nil {
-		identityStore = auth.NewPostgresIdentityStore(a.db.Pool(), auth.PostgresStoreConfig{Schema: a.cfg.Database.Schema})
+		store, err := auth.NewPostgresIdentityStore(a.db.Pool(), auth.PostgresStoreConfig{Schema: a.cfg.Database.Schema})
+		if err != nil {
+			return fmt.Errorf("failed to create identity store: %w", err)
+		}
+		identityStore = store
 	}
 
 	var oidcHandler *auth.OIDCHandler

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const (
+	// schemaNameMaxLen is PostgreSQL's maximum identifier length
+	schemaNameMaxLen = 63
+
+	// errSchemaPrefix is the prefix for all schema validation errors
+	errSchemaPrefix = "invalid schema name: "
+)
+
+// schemaNameRegex validates PostgreSQL schema names:
+// - Must start with a letter or underscore
+// - Can contain letters, digits, and underscores
+// - Max 63 characters (enforced separately)
+var schemaNameRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 type PostgresStoreConfig struct {
 	Schema            string
@@ -21,12 +36,28 @@ type PostgresIdentityStore struct {
 	cfg  PostgresStoreConfig
 }
 
-func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) *PostgresIdentityStore {
+func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*PostgresIdentityStore, error) {
 	conf := cfg
 	if conf.DefaultTenantName == "" {
 		conf.DefaultTenantName = "Default"
 	}
-	return &PostgresIdentityStore{pool: pool, cfg: conf}
+	if err := validateSchemaName(conf.Schema); err != nil {
+		return nil, err
+	}
+	return &PostgresIdentityStore{pool: pool, cfg: conf}, nil
+}
+
+func validateSchemaName(schema string) error {
+	if schema == "" {
+		return nil
+	}
+	if len(schema) > schemaNameMaxLen {
+		return fmt.Errorf(errSchemaPrefix+"must be %d characters or less", schemaNameMaxLen)
+	}
+	if !schemaNameRegex.MatchString(schema) {
+		return fmt.Errorf(errSchemaPrefix + "must start with a letter or underscore and contain only alphanumeric characters and underscores")
+	}
+	return nil
 }
 
 func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, identity Identity) (UserRef, error) {
