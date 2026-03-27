@@ -27,13 +27,36 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	var err error
 
+	databaseURL, err := setupTestDB(ctx)
+	if err != nil {
+		fmt.Printf("Failed to setup test database: %s\n", err)
+		os.Exit(1)
+	}
+
+	if err := runMigrations(ctx, databaseURL); err != nil {
+		fmt.Printf("Failed to run migrations: %s\n", err)
+		cleanup(ctx)
+		os.Exit(1)
+	}
+
+	// Run tests
+	code := m.Run()
+
+	// Cleanup - pool.Close removes all tracked containers/networks
+	cleanup(ctx)
+	os.Exit(code)
+}
+
+// setupTestDB starts a PostgreSQL container using dockertest and returns the database URL
+func setupTestDB(ctx context.Context) (string, error) {
+	var err error
+
 	// Connect to Docker using v4 API
 	pool, err = dockertest.NewPool(ctx, "",
 		dockertest.WithMaxWait(2*time.Minute),
 	)
 	if err != nil {
-		fmt.Printf("Could not connect to docker: %s\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("could not connect to docker: %w", err)
 	}
 
 	// Start PostgreSQL container using v4 functional options
@@ -45,9 +68,8 @@ func TestMain(m *testing.M) {
 		}),
 	)
 	if err != nil {
-		fmt.Printf("Could not start postgres container: %s\n", err)
 		pool.Close(ctx)
-		os.Exit(1)
+		return "", fmt.Errorf("could not start postgres container: %w", err)
 	}
 
 	// Get host:port
@@ -63,12 +85,15 @@ func TestMain(m *testing.M) {
 		}
 		return dbPool.Ping(ctx)
 	}); err != nil {
-		fmt.Printf("Could not connect to postgres: %s\n", err)
 		pool.Close(ctx)
-		os.Exit(1)
+		return "", fmt.Errorf("could not connect to postgres: %w", err)
 	}
 
-	// Run migrations
+	return databaseURL, nil
+}
+
+// runMigrations connects to the database and runs all migrations
+func runMigrations(ctx context.Context, databaseURL string) error {
 	mgr := db.NewManager(db.Config{
 		DatabaseURL: databaseURL,
 		Schema:      "public",
@@ -83,23 +108,14 @@ func TestMain(m *testing.M) {
 	})
 
 	if err := mgr.Connect(ctx); err != nil {
-		fmt.Printf("Could not connect: %s\n", err)
-		cleanup(ctx)
-		os.Exit(1)
+		return fmt.Errorf("could not connect: %w", err)
 	}
 
 	if err := mgr.RunMigrations(ctx); err != nil {
-		fmt.Printf("Could not run migrations: %s\n", err)
-		cleanup(ctx)
-		os.Exit(1)
+		return fmt.Errorf("could not run migrations: %w", err)
 	}
 
-	// Run tests
-	code := m.Run()
-
-	// Cleanup - pool.Close removes all tracked containers/networks
-	cleanup(ctx)
-	os.Exit(code)
+	return nil
 }
 
 // cleanup releases Docker and database resources
