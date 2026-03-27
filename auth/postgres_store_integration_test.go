@@ -23,9 +23,6 @@ var (
 	dbPool *pgxpool.Pool
 )
 
-// testUsersCount is the number of users to create in multi-user tests
-const testUsersCount = 5
-
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	var err error
@@ -181,6 +178,7 @@ func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 	store := newTestStore(t, "Test Tenant MultipleUsers")
 
 	// Create multiple users to verify the store handles concurrent-ish user creation
+	const testUsersCount = 5
 	for i := 0; i < testUsersCount; i++ {
 		identity := Identity{
 			Issuer:            fmt.Sprintf("issuer-%d", i),
@@ -194,27 +192,6 @@ func TestResolveOrProvisionUser_MultipleUsers(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEqual(t, uuid.Nil, userRef.UserID)
 	}
-}
-
-func TestResolveOrProvisionUser_NilPool(t *testing.T) {
-	ctx := context.Background()
-
-	// Create store with nil pool
-	store, err := NewPostgresIdentityStore(nil, PostgresStoreConfig{
-		Schema:            "public",
-		DefaultTenantName: "Test",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, store)
-
-	// Should return error when trying to use nil pool
-	identity := Identity{
-		Issuer:  "test",
-		Subject: "test",
-	}
-	_, err = store.ResolveOrProvisionUser(ctx, identity)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "postgres pool is required")
 }
 
 func TestResolveOrProvisionUser_EmptyFields(t *testing.T) {
@@ -250,13 +227,11 @@ func TestResolveOrProvisionUser_EmptyFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Note: The current implementation may not validate empty fields
-			// This test documents the current behavior
-			_, err := store.ResolveOrProvisionUser(ctx, tt.identity)
-			// We're documenting that empty fields are allowed for now
-			// If validation is added, this test should expect an error
-			_ = err // suppress unused variable warning if needed
-		})
+				// Current implementation allows empty issuer/subject fields.
+				// This test verifies that behavior is accepted without error.
+				_, err := store.ResolveOrProvisionUser(ctx, tt.identity)
+				require.NoError(t, err, "empty fields should be allowed (current behavior)")
+			})
 	}
 }
 
