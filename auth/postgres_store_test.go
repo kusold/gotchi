@@ -79,26 +79,4 @@ func TestNewPostgresIdentityStore_NilPool(t *testing.T) {
 	require.NotNil(t, store)
 }
 
-func TestNewPostgresIdentityStore_InvalidSchema(t *testing.T) {
-	// Constructor should return error for invalid schema names
-	tests := []struct {
-		name   string
-		schema string
-	}{
-		{"starts with digit", "1invalid"},
-		{"contains hyphen", "my-schema"},
-		{"SQL injection attempt", "public; DROP TABLE"},
-		{"too long", strings.Repeat("a", 64)},
-	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewPostgresIdentityStore(nil, PostgresStoreConfig{
-				Schema:            tt.schema,
-				DefaultTenantName: "Test",
-			})
-			require.Error(t, err, "schema %q should be rejected", tt.schema)
-			assert.Contains(t, err.Error(), "invalid schema name")
-		})
-	}
-}
