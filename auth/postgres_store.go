@@ -3,8 +3,6 @@ package auth
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,22 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const (
-	// schemaNameMaxLen is PostgreSQL's maximum identifier length
-	schemaNameMaxLen = 63
-
-	// errSchemaPrefix is the prefix for all schema validation errors
-	errSchemaPrefix = "invalid schema name: "
-)
-
-// schemaNameRegex validates PostgreSQL schema names:
-// - Must start with a letter or underscore
-// - Can contain letters, digits, and underscores
-// - Max 63 characters (enforced separately)
-var schemaNameRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-
 type PostgresStoreConfig struct {
-	Schema            string
 	DefaultTenantName string
 }
 
@@ -41,23 +24,7 @@ func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*Pos
 	if conf.DefaultTenantName == "" {
 		conf.DefaultTenantName = "Default"
 	}
-	if err := validateSchemaName(conf.Schema); err != nil {
-		return nil, err
-	}
 	return &PostgresIdentityStore{pool: pool, cfg: conf}, nil
-}
-
-func validateSchemaName(schema string) error {
-	if schema == "" {
-		return nil
-	}
-	if len(schema) > schemaNameMaxLen {
-		return fmt.Errorf(errSchemaPrefix+"must be %d characters or less", schemaNameMaxLen)
-	}
-	if !schemaNameRegex.MatchString(schema) {
-		return fmt.Errorf(errSchemaPrefix + "must start with a letter or underscore and contain only alphanumeric characters and underscores")
-	}
-	return nil
 }
 
 func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, identity Identity) (UserRef, error) {
@@ -65,10 +32,10 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		return UserRef{}, fmt.Errorf("postgres pool is required")
 	}
 
-	queryUser := fmt.Sprintf(`
+	queryUser := `
 		SELECT id, issuer, identifier_subject, COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-		FROM %s
-		WHERE issuer = $1 AND identifier_subject = $2`, s.qualify("users"))
+		FROM users
+		WHERE issuer = $1 AND identifier_subject = $2`
 
 	var user UserRef
 	var fallbackTenantID uuid.UUID
@@ -112,8 +79,8 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		username = identity.Username
 	}
 
-	insertUser := fmt.Sprintf(`
-		INSERT INTO %s (
+	insertUser := `
+		INSERT INTO users (
 			id,
 			tenant_id,
 			email,
@@ -126,7 +93,7 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9
 		)
-		RETURNING id, issuer, identifier_subject`, s.qualify("users"))
+		RETURNING id, issuer, identifier_subject`
 
 	var created UserRef
 	err = s.pool.QueryRow(ctx, insertUser,
@@ -160,15 +127,12 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 }
 
 func (s *PostgresIdentityStore) ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
-	query := fmt.Sprintf(`
+	query := `
 		SELECT tm.tenant_id, t.name, tm.role
-		FROM %s tm
-		JOIN %s t ON t.tenant_id = tm.tenant_id
+		FROM tenant_memberships tm
+		JOIN tenants t ON t.tenant_id = tm.tenant_id
 		WHERE tm.user_id = $1
-		ORDER BY tm.created_at`,
-		s.qualify("tenant_memberships"),
-		s.qualify("tenants"),
-	)
+		ORDER BY tm.created_at`
 
 	rows, err := s.pool.Query(ctx, query, userID)
 	if err != nil {
@@ -191,7 +155,7 @@ func (s *PostgresIdentityStore) ListMemberships(ctx context.Context, userID uuid
 }
 
 func (s *PostgresIdentityStore) GetTenantDisplay(ctx context.Context, tenantID uuid.UUID) (TenantDisplay, error) {
-	query := fmt.Sprintf(`SELECT tenant_id, name FROM %s WHERE tenant_id = $1`, s.qualify("tenants"))
+	query := `SELECT tenant_id, name FROM tenants WHERE tenant_id = $1`
 	var display TenantDisplay
 	if err := s.pool.QueryRow(ctx, query, tenantID).Scan(&display.TenantID, &display.Name); err != nil {
 		return TenantDisplay{}, err
@@ -200,7 +164,7 @@ func (s *PostgresIdentityStore) GetTenantDisplay(ctx context.Context, tenantID u
 }
 
 func (s *PostgresIdentityStore) firstTenantOrCreate(ctx context.Context) (uuid.UUID, error) {
-	query := fmt.Sprintf(`SELECT tenant_id FROM %s ORDER BY created_at LIMIT 1`, s.qualify("tenants"))
+	query := `SELECT tenant_id FROM tenants ORDER BY created_at LIMIT 1`
 	var tenantID uuid.UUID
 	err := s.pool.QueryRow(ctx, query).Scan(&tenantID)
 	if err == nil {
@@ -214,7 +178,7 @@ func (s *PostgresIdentityStore) firstTenantOrCreate(ctx context.Context) (uuid.U
 	if genErr != nil {
 		newTenantID = uuid.New()
 	}
-	insert := fmt.Sprintf(`INSERT INTO %s (tenant_id, name) VALUES ($1, $2)`, s.qualify("tenants"))
+	insert := `INSERT INTO tenants (tenant_id, name) VALUES ($1, $2)`
 	if _, err := s.pool.Exec(ctx, insert, newTenantID, s.cfg.DefaultTenantName); err != nil {
 		return uuid.UUID{}, err
 	}
@@ -222,12 +186,12 @@ func (s *PostgresIdentityStore) firstTenantOrCreate(ctx context.Context) (uuid.U
 }
 
 func (s *PostgresIdentityStore) createMembership(ctx context.Context, userID, tenantID uuid.UUID, role Role) (Membership, error) {
-	insert := fmt.Sprintf(`
-		INSERT INTO %s (user_id, tenant_id, role)
+	insert := `
+		INSERT INTO tenant_memberships (user_id, tenant_id, role)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, tenant_id)
 		DO UPDATE SET role = EXCLUDED.role
-		RETURNING tenant_id, role`, s.qualify("tenant_memberships"))
+		RETURNING tenant_id, role`
 
 	var m Membership
 	if err := s.pool.QueryRow(ctx, insert, userID, tenantID, role).Scan(&m.TenantID, &m.Role); err != nil {
@@ -238,15 +202,4 @@ func (s *PostgresIdentityStore) createMembership(ctx context.Context, userID, te
 		m.TenantName = display.Name
 	}
 	return m, nil
-}
-
-func (s *PostgresIdentityStore) qualify(table string) string {
-	if s.cfg.Schema == "" {
-		return table
-	}
-	return fmt.Sprintf("%s.%s", quoteIdentifier(s.cfg.Schema), quoteIdentifier(table))
-}
-
-func quoteIdentifier(identifier string) string {
-	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }

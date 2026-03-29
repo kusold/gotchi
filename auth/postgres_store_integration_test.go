@@ -29,7 +29,6 @@ func TestMain(m *testing.M) {
 // newTestStore creates a PostgresIdentityStore with a unique tenant name for test isolation
 func newTestStore(t *testing.T, tenantName string) *PostgresIdentityStore {
 	store, err := NewPostgresIdentityStore(testDB.Pool, PostgresStoreConfig{
-		Schema:            "public",
 		DefaultTenantName: tenantName,
 	})
 	require.NoError(t, err)
