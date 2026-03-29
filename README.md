@@ -34,32 +34,30 @@ DATABASE_URL='postgres://postgres:postgres@localhost:5432/gotchi_regression?sslm
 
 ## sqlc
 
-This project uses [sqlc](https://sqlc.dev/) for type-safe SQL queries.
+This project uses [sqlc](https://sqlc.dev/) for type-safe SQL queries, integrated with goose migrations.
 
 ### Structure
 
-- `schema/` - DDL files representing current schema (for sqlc type checking)
+- `migrations/` - Goose migrations (sqlc reads these for schema)
 - `queries/` - SQL queries with sqlc annotations
 - `internal/db/` - Generated Go code
 
 ### Regenerating
 
-After modifying queries in `queries/`:
+After modifying queries or migrations:
 
 ```bash
 sqlc generate
 ```
 
-### Schema vs Migrations
+### How it works
 
-The `schema/` directory contains plain DDL for sqlc to understand table structures. Goose migrations in `migrations/` handle actual database evolution.
+sqlc reads schema directly from goose migrations in `migrations/`. This ensures type generation stays in sync with your actual database schema - no duplicate schema files to maintain.
 
-**When adding migrations that modify schema:**
-1. Create the goose migration in `migrations/`
-2. Update `schema/*.sql` to reflect the new schema
-3. Run `sqlc generate` to update generated code
-
-This separation exists because sqlc doesn't natively parse goose's `-- +goose StatementBegin` format.
+**When adding schema changes:**
+1. Create a goose migration in `migrations/`
+2. Add queries in `queries/` if needed
+3. Run `sqlc generate`
 
 ## Git hooks
 
