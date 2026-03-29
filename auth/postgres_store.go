@@ -112,7 +112,7 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 
 	memberships, err := s.ListMemberships(ctx, created.ID)
 	if err != nil {
-		return UserRef{}, err
+		return UserRef{}, fmt.Errorf("failed to list memberships for created user: %w", err)
 	}
 	if len(memberships) == 0 {
 		return UserRef{}, fmt.Errorf("user must belong to at least one tenant")
