@@ -47,20 +47,14 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		IdentifierSubject: identity.Subject,
 	})
 	if err == nil {
-		// User exists - ensure they have at least one membership
+		// User exists - verify they have at least one membership
 		memberships, listErr := s.ListMemberships(ctx, user.ID)
 		if listErr != nil {
-			return UserRef{}, listErr
+			return UserRef{}, fmt.Errorf("failed to list memberships: %w", listErr)
 		}
 		if len(memberships) == 0 {
-			// Use fallback tenant_id from user record
-			if !user.TenantID.Valid {
-				return UserRef{}, fmt.Errorf("user must belong to at least one tenant")
-			}
-			tenantID := user.TenantID.Bytes
-			if _, createErr := s.createMembership(ctx, user.ID, tenantID, RoleMember); createErr != nil {
-				return UserRef{}, createErr
-			}
+			// Data integrity issue - user should have at least one membership
+			return UserRef{}, fmt.Errorf("user %s has no tenant memberships (data integrity issue)", user.ID)
 		}
 		return UserRef{
 			UserID:  user.ID,
@@ -93,7 +87,6 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 	now := time.Now()
 	created, err := s.queries.InsertUser(ctx, db.InsertUserParams{
 		ID:                userID,
-		TenantID:          pgtype.UUID{Bytes: tenantID, Valid: true},
 		Email:             identity.Email,
 		EmailVerified:     identity.EmailVerified,
 		Username:          pgtype.Text{String: username, Valid: username != ""},
@@ -115,7 +108,7 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		return UserRef{}, fmt.Errorf("failed to list memberships for created user: %w", err)
 	}
 	if len(memberships) == 0 {
-		return UserRef{}, fmt.Errorf("user must belong to at least one tenant")
+		return UserRef{}, fmt.Errorf("failed to verify membership creation")
 	}
 
 	return UserRef{

@@ -34,7 +34,6 @@ type TenantMembership struct {
 
 type User struct {
 	ID                uuid.UUID          `json:"id"`
-	TenantID          pgtype.UUID        `json:"tenant_id"`
 	Email             string             `json:"email"`
 	EmailVerified     bool               `json:"email_verified"`
 	Username          pgtype.Text        `json:"username"`
