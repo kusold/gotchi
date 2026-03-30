@@ -20,6 +20,7 @@ import (
 
 type Config struct {
 	DatabaseURL   string
+	SearchPath    string // Optional: set search_path for all connections (used by migration-regression)
 	EnableTracing bool
 }
 
@@ -57,6 +58,9 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 	if m.cfg.EnableTracing {
 		parsedCfg = setupTracing(parsedCfg)
+	}
+	if m.cfg.SearchPath != "" {
+		parsedCfg.ConnConfig.RuntimeParams["search_path"] = m.cfg.SearchPath
 	}
 	parsedCfg = m.setupMultitenancy(parsedCfg)
 

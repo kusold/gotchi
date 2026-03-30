@@ -43,8 +43,22 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// First, create the target schema using a raw pool connection
+	createPool, err := pgxpool.New(ctx, *databaseURL)
+	if err != nil {
+		log.Fatalf("create schema pool failed: %v", err)
+	}
+	adminCtx := db.AdminContext(ctx)
+	if _, err := createPool.Exec(adminCtx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS \"%s\"", targetSchema)); err != nil {
+		log.Fatalf("create schema failed: %v", err)
+	}
+	createPool.Close()
+
+	// Now create manager with SearchPath set so all connections use the target schema
 	manager := db.NewManager(db.Config{
 		DatabaseURL: *databaseURL,
+		SearchPath:  fmt.Sprintf("%s,public", targetSchema),
 	})
 
 	if err := manager.Connect(ctx); err != nil {
@@ -52,16 +66,7 @@ func main() {
 	}
 	defer manager.Close()
 
-	adminCtx := db.AdminContext(ctx)
 	defer dropSchema(adminCtx, manager.Pool(), targetSchema)
-
-	// Create the target schema and set search_path
-	if _, err := manager.Pool().Exec(adminCtx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS \"%s\"", targetSchema)); err != nil {
-		log.Fatalf("create schema failed: %v", err)
-	}
-	if _, err := manager.Pool().Exec(adminCtx, fmt.Sprintf("SET search_path TO \"%s\", public", targetSchema)); err != nil {
-		log.Fatalf("set search_path failed: %v", err)
-	}
 
 	sources := []migrationSource{
 		{name: "core", fs: migrations.Core(), dir: "."},
