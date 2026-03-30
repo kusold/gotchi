@@ -100,9 +100,6 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 
 	tableName := "sessions"
-	if a.cfg.Database.Schema != "" {
-		tableName = fmt.Sprintf("%s.sessions", a.cfg.Database.Schema)
-	}
 	sessionManager := session.NewPostgres(a.cfg.Session, a.db.Pool(), tableName)
 	session.RegisterGobTypes(auth.SessionClaims{})
 

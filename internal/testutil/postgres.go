@@ -108,7 +108,6 @@ func SetupTestDB(m *testing.M) *TestDB {
 func runMigrations(ctx context.Context, databaseURL string) error {
 	mgr := db.NewManager(db.Config{
 		DatabaseURL: databaseURL,
-		Schema:      "public",
 	})
 	mgr.AddMigrationSource(db.MigrationSource{
 		FS:  migrations.Core(),
