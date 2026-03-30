@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS tenants (
     tenant_id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -32,10 +33,13 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
 );
 CREATE INDEX IF NOT EXISTS tenant_memberships_user_id_idx ON tenant_memberships (user_id);
 CREATE INDEX IF NOT EXISTS tenant_memberships_tenant_id_idx ON tenant_memberships (tenant_id);
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP INDEX IF EXISTS tenant_memberships_tenant_id_idx;
 DROP INDEX IF EXISTS tenant_memberships_user_id_idx;
 DROP TABLE IF EXISTS tenant_memberships;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS tenants;
+-- +goose StatementEnd
