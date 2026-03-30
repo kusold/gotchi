@@ -15,6 +15,8 @@ import (
 	"github.com/kusold/gotchi/tenantctx"
 )
 
+const tenantSettingSQL = "SELECT COALESCE(current_setting('app.current_tenant', true), '')"
+
 var testDB *testutil.TestDB
 
 func TestMain(m *testing.M) {
@@ -46,15 +48,13 @@ func TestSetTenantFunction_SetsAndClearsConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	var val string
-	err = testDB.Pool.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, testDB.Pool.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, tenantID, val)
 
 	_, err = testDB.Pool.Exec(ctx, "SELECT set_tenant($1)", "")
 	require.NoError(t, err)
 
-	err = testDB.Pool.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, testDB.Pool.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, "", val)
 }
 
@@ -68,8 +68,7 @@ func TestBeforeAcquire_SetsTenantOnConnection(t *testing.T) {
 	defer conn.Release()
 
 	var val string
-	err = conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, conn.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, tenantID.String(), val)
 }
 
@@ -87,8 +86,7 @@ func TestAfterRelease_ClearsTenantOnConnection(t *testing.T) {
 	defer conn2.Release()
 
 	var val string
-	err = conn2.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_tenant', true), '')").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, conn2.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, "", val)
 }
 
@@ -101,8 +99,7 @@ func TestSystemTenant_DoesNotSetTenant(t *testing.T) {
 	defer conn.Release()
 
 	var val string
-	err = conn.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_tenant', true), '')").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, conn.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, "", val, "system tenant should not set app.current_tenant")
 }
 
@@ -115,8 +112,7 @@ func TestNoTenantContext_DoesNotSetTenant(t *testing.T) {
 	defer conn.Release()
 
 	var val string
-	err = conn.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_tenant', true), '')").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, conn.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, "", val, "no tenant context should not set app.current_tenant")
 }
 
@@ -130,8 +126,7 @@ func TestTenantSwitchingOnConnection(t *testing.T) {
 	require.NoError(t, err)
 
 	var val string
-	err = conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, conn.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, tenantA.String(), val)
 	conn.Release()
 
@@ -139,8 +134,7 @@ func TestTenantSwitchingOnConnection(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Release()
 
-	err = conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
-	require.NoError(t, err)
+	require.NoError(t, conn.QueryRow(ctx, tenantSettingSQL).Scan(&val))
 	assert.Equal(t, tenantB.String(), val)
 }
 
@@ -172,7 +166,7 @@ func TestConcurrentTenantIsolation(t *testing.T) {
 			defer conn.Release()
 
 			var val string
-			if err := conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val); err != nil {
+			if err := conn.QueryRow(ctx, tenantSettingSQL).Scan(&val); err != nil {
 				errCh <- err
 				return
 			}
@@ -190,7 +184,7 @@ func TestConcurrentTenantIsolation(t *testing.T) {
 			defer conn.Release()
 
 			var val string
-			if err := conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val); err != nil {
+			if err := conn.QueryRow(ctx, tenantSettingSQL).Scan(&val); err != nil {
 				errCh <- err
 				return
 			}
