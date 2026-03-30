@@ -71,8 +71,7 @@ const getUserByIdentifier = `-- name: GetUserByIdentifier :one
 SELECT
     id,
     issuer,
-    identifier_subject,
-    tenant_id
+    identifier_subject
 FROM users
 WHERE issuer = $1 AND identifier_subject = $2
 `
@@ -83,21 +82,15 @@ type GetUserByIdentifierParams struct {
 }
 
 type GetUserByIdentifierRow struct {
-	ID                uuid.UUID   `json:"id"`
-	Issuer            string      `json:"issuer"`
-	IdentifierSubject string      `json:"identifier_subject"`
-	TenantID          pgtype.UUID `json:"tenant_id"`
+	ID                uuid.UUID `json:"id"`
+	Issuer            string    `json:"issuer"`
+	IdentifierSubject string    `json:"identifier_subject"`
 }
 
 func (q *Queries) GetUserByIdentifier(ctx context.Context, arg GetUserByIdentifierParams) (GetUserByIdentifierRow, error) {
 	row := q.db.QueryRow(ctx, getUserByIdentifier, arg.Issuer, arg.IdentifierSubject)
 	var i GetUserByIdentifierRow
-	err := row.Scan(
-		&i.ID,
-		&i.Issuer,
-		&i.IdentifierSubject,
-		&i.TenantID,
-	)
+	err := row.Scan(&i.ID, &i.Issuer, &i.IdentifierSubject)
 	return i, err
 }
 
@@ -119,7 +112,6 @@ func (q *Queries) InsertTenant(ctx context.Context, arg InsertTenantParams) erro
 const insertUser = `-- name: InsertUser :one
 INSERT INTO users (
     id,
-    tenant_id,
     email,
     email_verified,
     username,
@@ -128,14 +120,13 @@ INSERT INTO users (
     identifier_subject,
     last_login_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8
 )
 RETURNING id, issuer, identifier_subject
 `
 
 type InsertUserParams struct {
 	ID                uuid.UUID          `json:"id"`
-	TenantID          pgtype.UUID        `json:"tenant_id"`
 	Email             string             `json:"email"`
 	EmailVerified     bool               `json:"email_verified"`
 	Username          pgtype.Text        `json:"username"`
@@ -154,7 +145,6 @@ type InsertUserRow struct {
 func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) (InsertUserRow, error) {
 	row := q.db.QueryRow(ctx, insertUser,
 		arg.ID,
-		arg.TenantID,
 		arg.Email,
 		arg.EmailVerified,
 		arg.Username,

@@ -2,15 +2,13 @@
 SELECT
     id,
     issuer,
-    identifier_subject,
-    tenant_id
+    identifier_subject
 FROM users
 WHERE issuer = $1 AND identifier_subject = $2;
 
 -- name: InsertUser :one
 INSERT INTO users (
     id,
-    tenant_id,
     email,
     email_verified,
     username,
@@ -19,7 +17,7 @@ INSERT INTO users (
     identifier_subject,
     last_login_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8
 )
 RETURNING id, issuer, identifier_subject;
 
