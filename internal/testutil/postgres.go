@@ -17,8 +17,9 @@ import (
 
 // TestDB holds the resources for an integration test database.
 type TestDB struct {
-	Pool   *pgxpool.Pool
-	closer func()
+	Pool        *pgxpool.Pool
+	DatabaseURL string
+	closer      func()
 }
 
 // Close releases all Docker and database resources.
@@ -92,7 +93,8 @@ func SetupTestDB(m *testing.M) *TestDB {
 	}
 
 	return &TestDB{
-		Pool: dbPool,
+		Pool:        dbPool,
+		DatabaseURL: databaseURL,
 		closer: func() {
 			if dbPool != nil {
 				dbPool.Close()
