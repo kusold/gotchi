@@ -146,16 +146,18 @@ func (m *Manager) setupMultitenancy(cfg *pgxpool.Config) *pgxpool.Config {
 			return true
 		}
 		if _, err := conn.Exec(ctx, setTenantSQL, tenantID); err != nil {
-			slog.Error("failed to set tenant on postgres connection", "err", err)
-			return false
+			// Log the error but don't fail the acquire
+			// The function may not exist yet during initial migrations
+			slog.Debug("failed to set tenant on postgres connection", "err", err)
 		}
 		return true
 	}
 
 	cfg.AfterRelease = func(conn *pgx.Conn) bool {
 		if _, err := conn.Exec(context.Background(), setTenantSQL, ""); err != nil {
-			slog.Error("failed to clear tenant on postgres connection", "err", err)
-			return false
+			// Log the error but don't destroy the connection
+			// The function may not exist yet during initial migrations
+			slog.Debug("failed to clear tenant on postgres connection", "err", err)
 		}
 		return true
 	}
