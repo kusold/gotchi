@@ -45,7 +45,6 @@ func main() {
 	ctx := context.Background()
 	manager := db.NewManager(db.Config{
 		DatabaseURL: *databaseURL,
-		Schema:      targetSchema,
 	})
 
 	if err := manager.Connect(ctx); err != nil {
