@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -16,7 +15,6 @@ import (
 
 type Config struct {
 	DatabaseURL           string
-	Schema                string
 	DatabaseEnableTracing bool
 	Session               session.Config
 	Auth                  auth.Config
@@ -69,7 +67,6 @@ func NewServer(opts Options) (*Server, error) {
 
 	database := db.NewManager(db.Config{
 		DatabaseURL:   opts.Config.DatabaseURL,
-		Schema:        opts.Config.Schema,
 		EnableTracing: opts.Config.DatabaseEnableTracing,
 	})
 
@@ -109,9 +106,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	tableName := "sessions"
-	if s.cfg.Schema != "" {
-		tableName = fmt.Sprintf("%s.sessions", s.cfg.Schema)
-	}
 	sessionManager := session.NewPostgres(s.cfg.Session, s.db.Pool(), tableName)
 	session.RegisterGobTypes(auth.SessionClaims{})
 

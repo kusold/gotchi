@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -21,7 +20,6 @@ import (
 
 type Config struct {
 	DatabaseURL   string
-	Schema        string
 	EnableTracing bool
 }
 
@@ -57,13 +55,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 		return err
 	}
 
-	if m.cfg.Schema != "" {
-		if parsedCfg.ConnConfig.RuntimeParams == nil {
-			parsedCfg.ConnConfig.RuntimeParams = map[string]string{}
-		}
-		parsedCfg.ConnConfig.RuntimeParams["search_path"] = fmt.Sprintf("%s,public", m.cfg.Schema)
-	}
-
 	if m.cfg.EnableTracing {
 		parsedCfg = setupTracing(parsedCfg)
 	}
@@ -74,13 +65,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 		return err
 	}
 	m.pool = pool
-
-	if m.cfg.Schema != "" {
-		query := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdentifier(m.cfg.Schema))
-		if _, err := m.pool.Exec(AdminContext(ctx), query); err != nil {
-			return err
-		}
-	}
 
 	return m.Ping(AdminContext(ctx))
 }
@@ -135,9 +119,6 @@ func AdminContext(ctx context.Context) context.Context {
 
 func (m *Manager) setupMultitenancy(cfg *pgxpool.Config) *pgxpool.Config {
 	setTenantSQL := "select set_tenant($1)"
-	if m.cfg.Schema != "" {
-		setTenantSQL = fmt.Sprintf("select %s.set_tenant($1)", quoteIdentifier(m.cfg.Schema))
-	}
 
 	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
 		tenantID, ok := tenantctx.TenantIDString(ctx)
@@ -190,9 +171,4 @@ func setupTracing(cfg *pgxpool.Config) *pgxpool.Config {
 		LogLevel: tracelog.LogLevelTrace,
 	}
 	return cfg
-}
-
-func quoteIdentifier(value string) string {
-	escaped := strings.ReplaceAll(value, `"`, `""`)
-	return `"` + escaped + `"`
 }
