@@ -87,7 +87,7 @@ func TestAfterRelease_ClearsTenantOnConnection(t *testing.T) {
 	defer conn2.Release()
 
 	var val string
-	err = conn2.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
+	err = conn2.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_tenant', true), '')").Scan(&val)
 	require.NoError(t, err)
 	assert.Equal(t, "", val)
 }
@@ -101,7 +101,7 @@ func TestSystemTenant_DoesNotSetTenant(t *testing.T) {
 	defer conn.Release()
 
 	var val string
-	err = conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
+	err = conn.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_tenant', true), '')").Scan(&val)
 	require.NoError(t, err)
 	assert.Equal(t, "", val, "system tenant should not set app.current_tenant")
 }
@@ -115,7 +115,7 @@ func TestNoTenantContext_DoesNotSetTenant(t *testing.T) {
 	defer conn.Release()
 
 	var val string
-	err = conn.QueryRow(ctx, "SELECT current_setting('app.current_tenant', true)").Scan(&val)
+	err = conn.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_tenant', true), '')").Scan(&val)
 	require.NoError(t, err)
 	assert.Equal(t, "", val, "no tenant context should not set app.current_tenant")
 }
