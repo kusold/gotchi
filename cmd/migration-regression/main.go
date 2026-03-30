@@ -55,6 +55,14 @@ func main() {
 	adminCtx := db.AdminContext(ctx)
 	defer dropSchema(adminCtx, manager.Pool(), targetSchema)
 
+	// Create the target schema and set search_path
+	if _, err := manager.Pool().Exec(adminCtx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %q", targetSchema)); err != nil {
+		log.Fatalf("create schema failed: %v", err)
+	}
+	if _, err := manager.Pool().Exec(adminCtx, fmt.Sprintf("SET search_path TO %q, public", targetSchema)); err != nil {
+		log.Fatalf("set search_path failed: %v", err)
+	}
+
 	sources := []migrationSource{
 		{name: "core", fs: migrations.Core(), dir: "."},
 		{name: "auth", fs: migrations.Auth(), dir: "."},
