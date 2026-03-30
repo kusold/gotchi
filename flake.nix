@@ -19,6 +19,7 @@
             gotools
             golangci-lint
             goose
+            sqlc
             prek
           ];
         };

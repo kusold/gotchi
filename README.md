@@ -32,6 +32,33 @@ Run this against a disposable Postgres database:
 DATABASE_URL='postgres://postgres:postgres@localhost:5432/gotchi_regression?sslmode=disable' ./scripts/migration-regression.sh
 ```
 
+## sqlc
+
+This project uses [sqlc](https://sqlc.dev/) for type-safe SQL queries, integrated with goose migrations.
+
+### Structure
+
+- `migrations/` - Goose migrations (sqlc reads these for schema)
+- `queries/` - SQL queries with sqlc annotations
+- `internal/db/` - Generated Go code
+
+### Regenerating
+
+After modifying queries or migrations:
+
+```bash
+sqlc generate
+```
+
+### How it works
+
+sqlc reads schema directly from goose migrations in `migrations/`. This ensures type generation stays in sync with your actual database schema - no duplicate schema files to maintain.
+
+**When adding schema changes:**
+1. Create a goose migration in `migrations/`
+2. Add queries in `queries/` if needed
+3. Run `sqlc generate`
+
 ## Git hooks
 
 This repo uses [`prek`](https://prek.j178.dev/) for commit hooks and enforces Conventional Commit messages via a `commit-msg` hook.

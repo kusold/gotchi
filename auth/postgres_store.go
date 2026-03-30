@@ -2,12 +2,15 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kusold/gotchi/internal/db"
 )
 
 type PostgresStoreConfig struct {
@@ -15,8 +18,9 @@ type PostgresStoreConfig struct {
 }
 
 type PostgresIdentityStore struct {
-	pool *pgxpool.Pool
-	cfg  PostgresStoreConfig
+	pool    *pgxpool.Pool
+	queries *db.Queries
+	cfg     PostgresStoreConfig
 }
 
 func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*PostgresIdentityStore, error) {
@@ -24,7 +28,12 @@ func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*Pos
 	if conf.DefaultTenantName == "" {
 		conf.DefaultTenantName = "Default"
 	}
-	return &PostgresIdentityStore{pool: pool, cfg: conf}, nil
+
+	return &PostgresIdentityStore{
+		pool:    pool,
+		queries: db.New(pool),
+		cfg:     conf,
+	}, nil
 }
 
 func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, identity Identity) (UserRef, error) {
@@ -32,41 +41,43 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		return UserRef{}, fmt.Errorf("postgres pool is required")
 	}
 
-	queryUser := `
-		SELECT id, issuer, identifier_subject, COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-		FROM users
-		WHERE issuer = $1 AND identifier_subject = $2`
-
-	var user UserRef
-	var fallbackTenantID uuid.UUID
-	err := s.pool.QueryRow(ctx, queryUser, identity.Issuer, identity.Subject).Scan(
-		&user.UserID,
-		&user.Issuer,
-		&user.Subject,
-		&fallbackTenantID,
-	)
+	// Try to get existing user
+	user, err := s.queries.GetUserByIdentifier(ctx, db.GetUserByIdentifierParams{
+		Issuer:            identity.Issuer,
+		IdentifierSubject: identity.Subject,
+	})
 	if err == nil {
-		memberships, listErr := s.ListMemberships(ctx, user.UserID)
+		// User exists - ensure they have at least one membership
+		memberships, listErr := s.ListMemberships(ctx, user.ID)
 		if listErr != nil {
 			return UserRef{}, listErr
 		}
 		if len(memberships) == 0 {
-			if fallbackTenantID == uuid.Nil {
+			// Use fallback tenant_id from user record
+			if !user.TenantID.Valid {
 				return UserRef{}, fmt.Errorf("user must belong to at least one tenant")
 			}
-			if _, createErr := s.createMembership(ctx, user.UserID, fallbackTenantID, RoleMember); createErr != nil {
+			tenantID := user.TenantID.Bytes
+			if _, createErr := s.createMembership(ctx, user.ID, tenantID, RoleMember); createErr != nil {
 				return UserRef{}, createErr
 			}
 		}
-		return user, nil
-	}
-	if err != pgx.ErrNoRows {
-		return UserRef{}, err
+		return UserRef{
+			UserID:  user.ID,
+			Issuer:  user.Issuer,
+			Subject: user.IdentifierSubject,
+		}, nil
 	}
 
+	// Check if error is "no rows" - if so, create new user
+	if err != pgx.ErrNoRows {
+		return UserRef{}, fmt.Errorf("failed to query user: %w", err)
+	}
+
+	// Create new user
 	tenantID, err := s.firstTenantOrCreate(ctx)
 	if err != nil {
-		return UserRef{}, err
+		return UserRef{}, fmt.Errorf("failed to get or create tenant: %w", err)
 	}
 
 	userID, err := uuid.NewV7()
@@ -79,124 +90,111 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 		username = identity.Username
 	}
 
-	insertUser := `
-		INSERT INTO users (
-			id,
-			tenant_id,
-			email,
-			email_verified,
-			username,
-			name,
-			issuer,
-			identifier_subject,
-			last_login_at
-		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9
-		)
-		RETURNING id, issuer, identifier_subject`
-
-	var created UserRef
-	err = s.pool.QueryRow(ctx, insertUser,
-		userID,
-		tenantID,
-		identity.Email,
-		identity.EmailVerified,
-		username,
-		identity.Name,
-		identity.Issuer,
-		identity.Subject,
-		time.Now(),
-	).Scan(&created.UserID, &created.Issuer, &created.Subject)
+	now := time.Now()
+	created, err := s.queries.InsertUser(ctx, db.InsertUserParams{
+		ID:                userID,
+		TenantID:          pgtype.UUID{Bytes: tenantID, Valid: true},
+		Email:             identity.Email,
+		EmailVerified:     identity.EmailVerified,
+		Username:          pgtype.Text{String: username, Valid: username != ""},
+		Name:              pgtype.Text{String: identity.Name, Valid: identity.Name != ""},
+		Issuer:            identity.Issuer,
+		IdentifierSubject: identity.Subject,
+		LastLoginAt:       pgtype.Timestamptz{Time: now, Valid: true},
+	})
 	if err != nil {
-		return UserRef{}, err
+		return UserRef{}, fmt.Errorf("failed to insert user: %w", err)
 	}
 
-	if _, err := s.createMembership(ctx, created.UserID, tenantID, RoleMember); err != nil {
-		return UserRef{}, err
+	if _, err := s.createMembership(ctx, created.ID, tenantID, RoleMember); err != nil {
+		return UserRef{}, fmt.Errorf("failed to create membership: %w", err)
 	}
 
-	memberships, err := s.ListMemberships(ctx, created.UserID)
+	memberships, err := s.ListMemberships(ctx, created.ID)
 	if err != nil {
-		return UserRef{}, err
+		return UserRef{}, fmt.Errorf("failed to list memberships for created user: %w", err)
 	}
 	if len(memberships) == 0 {
 		return UserRef{}, fmt.Errorf("user must belong to at least one tenant")
 	}
 
-	return created, nil
+	return UserRef{
+		UserID:  created.ID,
+		Issuer:  created.Issuer,
+		Subject: created.IdentifierSubject,
+	}, nil
 }
 
 func (s *PostgresIdentityStore) ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
-	query := `
-		SELECT tm.tenant_id, t.name, tm.role
-		FROM tenant_memberships tm
-		JOIN tenants t ON t.tenant_id = tm.tenant_id
-		WHERE tm.user_id = $1
-		ORDER BY tm.created_at`
-
-	rows, err := s.pool.Query(ctx, query, userID)
+	rows, err := s.queries.ListMemberships(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list memberships: %w", err)
 	}
-	defer rows.Close()
 
-	out := make([]Membership, 0)
-	for rows.Next() {
-		var m Membership
-		if err := rows.Scan(&m.TenantID, &m.TenantName, &m.Role); err != nil {
-			return nil, err
+	memberships := make([]Membership, len(rows))
+	for i, row := range rows {
+		memberships[i] = Membership{
+			TenantID:   row.TenantID,
+			TenantName: row.TenantName,
+			Role:       Role(row.Role),
 		}
-		out = append(out, m)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return memberships, nil
 }
 
 func (s *PostgresIdentityStore) GetTenantDisplay(ctx context.Context, tenantID uuid.UUID) (TenantDisplay, error) {
-	query := `SELECT tenant_id, name FROM tenants WHERE tenant_id = $1`
-	var display TenantDisplay
-	if err := s.pool.QueryRow(ctx, query, tenantID).Scan(&display.TenantID, &display.Name); err != nil {
-		return TenantDisplay{}, err
+	row, err := s.queries.GetTenantByID(ctx, tenantID)
+	if err != nil {
+		return TenantDisplay{}, fmt.Errorf("failed to get tenant: %w", err)
 	}
-	return display, nil
+	return TenantDisplay{
+		TenantID: row.TenantID,
+		Name:     row.Name,
+	}, nil
 }
 
 func (s *PostgresIdentityStore) firstTenantOrCreate(ctx context.Context) (uuid.UUID, error) {
-	query := `SELECT tenant_id FROM tenants ORDER BY created_at LIMIT 1`
-	var tenantID uuid.UUID
-	err := s.pool.QueryRow(ctx, query).Scan(&tenantID)
+	tenantID, err := s.queries.GetFirstTenant(ctx)
 	if err == nil {
 		return tenantID, nil
 	}
-	if err != pgx.ErrNoRows {
-		return uuid.UUID{}, err
+
+	// Check if error is "no rows"
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.UUID{}, fmt.Errorf("failed to query tenant: %w", err)
 	}
 
+	// Create new tenant
 	newTenantID, genErr := uuid.NewV7()
 	if genErr != nil {
 		newTenantID = uuid.New()
 	}
-	insert := `INSERT INTO tenants (tenant_id, name) VALUES ($1, $2)`
-	if _, err := s.pool.Exec(ctx, insert, newTenantID, s.cfg.DefaultTenantName); err != nil {
-		return uuid.UUID{}, err
+
+	if err := s.queries.InsertTenant(ctx, db.InsertTenantParams{
+		TenantID: newTenantID,
+		Name:     s.cfg.DefaultTenantName,
+	}); err != nil {
+		return uuid.UUID{}, fmt.Errorf("failed to insert tenant: %w", err)
 	}
 	return newTenantID, nil
 }
 
 func (s *PostgresIdentityStore) createMembership(ctx context.Context, userID, tenantID uuid.UUID, role Role) (Membership, error) {
-	insert := `
-		INSERT INTO tenant_memberships (user_id, tenant_id, role)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (user_id, tenant_id)
-		DO UPDATE SET role = EXCLUDED.role
-		RETURNING tenant_id, role`
-
-	var m Membership
-	if err := s.pool.QueryRow(ctx, insert, userID, tenantID, role).Scan(&m.TenantID, &m.Role); err != nil {
-		return Membership{}, err
+	row, err := s.queries.UpsertMembership(ctx, db.UpsertMembershipParams{
+		UserID:   userID,
+		TenantID: tenantID,
+		Role:     string(role),
+	})
+	if err != nil {
+		return Membership{}, fmt.Errorf("failed to upsert membership: %w", err)
 	}
+
+	m := Membership{
+		TenantID: row.TenantID,
+		Role:     Role(row.Role),
+	}
+
+	// Get tenant name
 	display, err := s.GetTenantDisplay(ctx, m.TenantID)
 	if err == nil {
 		m.TenantName = display.Name
