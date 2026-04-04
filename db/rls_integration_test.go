@@ -381,16 +381,16 @@ func TestRLS_NoTenantSeesNoRows(t *testing.T) {
 func TestBeforeAcquire_GracefulDegradation_MissingFunction(t *testing.T) {
 	ctx := context.Background()
 
-	// Create a manager with a schema that has no set_tenant function
+	// Create a manager with search_path pointing to a schema that has no set_tenant function
 	mgr := db.NewManager(db.Config{
 		DatabaseURL: testDB.DatabaseURL,
-		Schema:      "no_rls_schema",
+		SearchPath:  "no_rls_schema,public",
 	})
 	require.NoError(t, mgr.Connect(ctx))
 	t.Cleanup(mgr.Close)
 
 	// Acquiring with a tenant context should not fail — the undefined_function
-	// error from calling no_rls_schema.set_tenant() is tolerated
+	// error from calling set_tenant() is tolerated
 	tenantID := uuid.New()
 	conn, err := mgr.Pool().Acquire(tenantctx.WithTenantID(ctx, tenantID))
 	require.NoError(t, err, "acquire should succeed even when set_tenant function is missing")

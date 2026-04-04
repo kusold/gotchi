@@ -50,7 +50,7 @@ func main() {
 		log.Fatalf("create schema pool failed: %v", err)
 	}
 	adminCtx := db.AdminContext(ctx)
-	if _, err := createPool.Exec(adminCtx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS \"%s\"", targetSchema)); err != nil {
+	if _, err := createPool.Exec(adminCtx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdentifier(targetSchema))); err != nil {
 		log.Fatalf("create schema failed: %v", err)
 	}
 	createPool.Close()
