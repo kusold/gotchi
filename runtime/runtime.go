@@ -106,8 +106,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	tableName := "sessions"
-	sessionManager := session.NewPostgres(s.cfg.Session, s.db.Pool(), tableName)
+	sessionManager := session.NewPostgres(s.cfg.Session, s.db.Pool(), "sessions")
 	session.RegisterGobTypes(auth.SessionClaims{})
 
 	var oidcHandler *auth.OIDCHandler

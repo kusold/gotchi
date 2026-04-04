@@ -99,8 +99,7 @@ func (a *Application) Run(ctx context.Context) error {
 		return err
 	}
 
-	tableName := "sessions"
-	sessionManager := session.NewPostgres(a.cfg.Session, a.db.Pool(), tableName)
+	sessionManager := session.NewPostgres(a.cfg.Session, a.db.Pool(), "sessions")
 	session.RegisterGobTypes(auth.SessionClaims{})
 
 	identityStore := a.cfg.Auth.IdentityStore
