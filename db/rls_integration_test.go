@@ -156,44 +156,29 @@ func TestConcurrentTenantIsolation(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines*2)
 
+	assertTenantContext := func(tenantID uuid.UUID) {
+		defer wg.Done()
+		conn, err := mgr.Pool().Acquire(tenantctx.WithTenantID(ctx, tenantID))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Release()
+
+		var val string
+		if err := conn.QueryRow(ctx, tenantSettingSQL).Scan(&val); err != nil {
+			errCh <- err
+			return
+		}
+		if val != tenantID.String() {
+			errCh <- fmt.Errorf("expected tenant %s, got %s", tenantID.String(), val)
+		}
+	}
+
 	for i := 0; i < goroutines; i++ {
 		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			conn, err := mgr.Pool().Acquire(tenantctx.WithTenantID(ctx, tenantA))
-			if err != nil {
-				errCh <- err
-				return
-			}
-			defer conn.Release()
-
-			var val string
-			if err := conn.QueryRow(ctx, tenantSettingSQL).Scan(&val); err != nil {
-				errCh <- err
-				return
-			}
-			if val != tenantA.String() {
-				errCh <- fmt.Errorf("expected tenant A (%s), got %s", tenantA.String(), val)
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			conn, err := mgr.Pool().Acquire(tenantctx.WithTenantID(ctx, tenantB))
-			if err != nil {
-				errCh <- err
-				return
-			}
-			defer conn.Release()
-
-			var val string
-			if err := conn.QueryRow(ctx, tenantSettingSQL).Scan(&val); err != nil {
-				errCh <- err
-				return
-			}
-			if val != tenantB.String() {
-				errCh <- fmt.Errorf("expected tenant B (%s), got %s", tenantB.String(), val)
-			}
-		}()
+		go assertTenantContext(tenantA)
+		go assertTenantContext(tenantB)
 	}
 
 	wg.Wait()
