@@ -108,6 +108,9 @@ func (m *MockOIDCProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	user, ok := m.codeToUser[code]
+	if ok {
+		delete(m.codeToUser, code)
+	}
 	m.mu.Unlock()
 
 	if !ok {

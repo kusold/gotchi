@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kusold/gotchi/internal/db"
 	"github.com/kusold/gotchi/internal/testoidc"
 	"github.com/kusold/gotchi/session"
 )
@@ -95,14 +96,17 @@ func uniqueSuffix() string {
 	return uuid.New().String()[:8]
 }
 
-func addSecondTenant(t *testing.T, userID uuid.UUID, tenantName string) uuid.UUID {
+func addSecondTenant(t *testing.T, store *PostgresIdentityStore, userID uuid.UUID, tenantName string) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
 
 	tenantID := uuid.New()
-	_, err := testDB.Pool.Exec(ctx, "INSERT INTO tenants (tenant_id, name) VALUES ($1, $2)", tenantID, tenantName)
+	err := store.queries.InsertTenant(ctx, db.InsertTenantParams{
+		TenantID: tenantID,
+		Name:     tenantName,
+	})
 	require.NoError(t, err)
-	_, err = testDB.Pool.Exec(ctx, "INSERT INTO tenant_memberships (user_id, tenant_id, role) VALUES ($1, $2, 'admin')", userID, tenantID)
+	_, err = store.createMembership(ctx, userID, tenantID, RoleAdmin)
 	require.NoError(t, err)
 	return tenantID
 }
@@ -122,7 +126,7 @@ func provisionUserWithSecondTenant(t *testing.T, issuer string) (*testoidc.TestU
 	store := newTestStore(t, "Secondary "+suffix)
 	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
 	require.NoError(t, err)
-	secondTenantID := addSecondTenant(t, userRef.UserID, "Second Org "+suffix)
+	secondTenantID := addSecondTenant(t, store, userRef.UserID, "Second Org "+suffix)
 
 	testUser := &testoidc.TestUser{
 		Subject:           identity.Subject,
@@ -160,14 +164,15 @@ func doSelectTenant(t *testing.T, router chi.Router, sessionCookies []*http.Cook
 }
 
 func TestOAuthFlow_SingleTenant(t *testing.T) {
-	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+uniqueSuffix())
+	suffix := uniqueSuffix()
+	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+suffix)
 
 	testUser := &testoidc.TestUser{
-		Subject:           "user-single-1",
-		Email:             "single@example.com",
+		Subject:           "user-single-" + suffix,
+		Email:             "single-" + suffix + "@example.com",
 		EmailVerified:     true,
 		Name:              "Single Tenant User",
-		PreferredUsername: "singleuser",
+		PreferredUsername: "singleuser-" + suffix,
 	}
 
 	state, cookies := doAuthorize(t, router)
@@ -231,13 +236,14 @@ func TestTenantSelection_Success(t *testing.T) {
 }
 
 func TestTenantSelection_UnauthorizedTenant(t *testing.T) {
-	_, mockOIDC, router := setupOAuthHandler(t, "Unauthorized Tenant "+uniqueSuffix())
+	suffix := uniqueSuffix()
+	_, mockOIDC, router := setupOAuthHandler(t, "Unauthorized Tenant "+suffix)
 
 	testUser := &testoidc.TestUser{
-		Subject:           "user-unauth-1",
-		Email:             "unauth@example.com",
+		Subject:           "user-unauth-" + suffix,
+		Email:             "unauth-" + suffix + "@example.com",
 		EmailVerified:     true,
-		PreferredUsername: "unauthuser",
+		PreferredUsername: "unauthuser-" + suffix,
 	}
 
 	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser)
@@ -279,13 +285,14 @@ func TestOAuthCallback_InvalidCode(t *testing.T) {
 }
 
 func TestOAuthCallback_StateCookieClearedOnSuccess(t *testing.T) {
-	_, mockOIDC, router := setupOAuthHandler(t, "State Cleared "+uuid.New().String()[:8])
+	suffix := uniqueSuffix()
+	_, mockOIDC, router := setupOAuthHandler(t, "State Cleared "+suffix)
 
 	testUser := &testoidc.TestUser{
-		Subject:           "user-clear-1",
-		Email:             "clear@example.com",
+		Subject:           "user-clear-" + suffix,
+		Email:             "clear-" + suffix + "@example.com",
 		EmailVerified:     true,
-		PreferredUsername: "clearuser",
+		PreferredUsername: "clearuser-" + suffix,
 	}
 
 	state, cookies := doAuthorize(t, router)
