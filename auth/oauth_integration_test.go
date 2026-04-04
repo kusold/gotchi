@@ -103,6 +103,59 @@ func addSecondTenant(t *testing.T, userID uuid.UUID, tenantName string) uuid.UUI
 	return tenantID
 }
 
+type multiTenantEnv struct {
+	mockOIDC       *testoidc.MockOIDCProvider
+	router         chi.Router
+	testUser       *testoidc.TestUser
+	secondTenantID uuid.UUID
+}
+
+func setupMultiTenantTest(t *testing.T) multiTenantEnv {
+	t.Helper()
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	_, mockOIDC, router := setupOAuthHandler(t, "MT Primary "+suffix)
+
+	identity := Identity{
+		Issuer:            mockOIDC.IssuerURL(),
+		Subject:           "user-mt-" + suffix,
+		Email:             suffix + "@example.com",
+		EmailVerified:     true,
+		PreferredUsername: "mt-" + suffix,
+	}
+	store := newTestStore(t, "MT Secondary "+suffix)
+	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
+	require.NoError(t, err)
+	secondTenantID := addSecondTenant(t, userRef.UserID, "MT Second Org "+suffix)
+
+	testUser := &testoidc.TestUser{
+		Subject:           identity.Subject,
+		Email:             identity.Email,
+		EmailVerified:     identity.EmailVerified,
+		PreferredUsername: identity.PreferredUsername,
+	}
+
+	return multiTenantEnv{
+		mockOIDC:       mockOIDC,
+		router:         router,
+		testUser:       testUser,
+		secondTenantID: secondTenantID,
+	}
+}
+
+func doAuthorizeAndCallbackJSON(t *testing.T, env multiTenantEnv) (*httptest.ResponseRecorder, []*http.Cookie) {
+	t.Helper()
+
+	state, cookies := doAuthorize(t, env.router)
+	code := env.mockOIDC.CreateAuthCode(env.testUser)
+	rec := doCallback(t, env.router, code, state, cookies, http.Header{
+		"Accept": {"application/json"},
+	})
+
+	return rec, rec.Result().Cookies()
+}
+
 func TestOAuthFlow_SingleTenant(t *testing.T) {
 	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+uuid.New().String()[:8])
 
@@ -124,35 +177,9 @@ func TestOAuthFlow_SingleTenant(t *testing.T) {
 }
 
 func TestOAuthFlow_MultiTenant_RequiresSelection(t *testing.T) {
-	ctx := context.Background()
-	_, mockOIDC, router := setupOAuthHandler(t, "Multi Tenant A "+uuid.New().String()[:8])
+	env := setupMultiTenantTest(t)
 
-	identity := Identity{
-		Issuer:            mockOIDC.IssuerURL(),
-		Subject:           "user-multi-1",
-		Email:             "multi@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "multiuser",
-	}
-	store := newTestStore(t, "Multi Tenant B "+uuid.New().String()[:8])
-	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
-	require.NoError(t, err)
-	addSecondTenant(t, userRef.UserID, "Second Org "+uuid.New().String()[:8])
-
-	testUser := &testoidc.TestUser{
-		Subject:           "user-multi-1",
-		Email:             "multi@example.com",
-		EmailVerified:     true,
-		Name:              "Multi Tenant User",
-		PreferredUsername: "multiuser",
-	}
-
-	state, cookies := doAuthorize(t, router)
-	code := mockOIDC.CreateAuthCode(testUser)
-
-	rec := doCallback(t, router, code, state, cookies, http.Header{
-		"Accept": {"application/json"},
-	})
+	rec, _ := doAuthorizeAndCallbackJSON(t, env)
 
 	assert.Equal(t, http.StatusConflict, rec.Code)
 
@@ -163,37 +190,9 @@ func TestOAuthFlow_MultiTenant_RequiresSelection(t *testing.T) {
 }
 
 func TestTenantSelection_ListTenants(t *testing.T) {
-	ctx := context.Background()
-	_, mockOIDC, router := setupOAuthHandler(t, "List Tenants A "+uuid.New().String()[:8])
+	env := setupMultiTenantTest(t)
 
-	identity := Identity{
-		Issuer:            mockOIDC.IssuerURL(),
-		Subject:           "user-list-1",
-		Email:             "list@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "listuser",
-	}
-	store := newTestStore(t, "List Tenants B "+uuid.New().String()[:8])
-	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
-	require.NoError(t, err)
-	addSecondTenant(t, userRef.UserID, "Second Org "+uuid.New().String()[:8])
-
-	testUser := &testoidc.TestUser{
-		Subject:           "user-list-1",
-		Email:             "list@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "listuser",
-	}
-
-	state, cookies := doAuthorize(t, router)
-	code := mockOIDC.CreateAuthCode(testUser)
-	rec := doCallback(t, router, code, state, cookies, http.Header{
-		"Accept": {"application/json"},
-	})
-	require.Equal(t, http.StatusConflict, rec.Code)
-
-	sessionCookies := rec.Result().Cookies()
-	require.NotEmpty(t, sessionCookies)
+	_, sessionCookies := doAuthorizeAndCallbackJSON(t, env)
 
 	listReq := httptest.NewRequest("GET", "/tenants", nil)
 	listReq.Header.Set("Accept", "application/json")
@@ -201,7 +200,7 @@ func TestTenantSelection_ListTenants(t *testing.T) {
 		listReq.AddCookie(c)
 	}
 	listRec := httptest.NewRecorder()
-	router.ServeHTTP(listRec, listReq)
+	env.router.ServeHTTP(listRec, listReq)
 
 	assert.Equal(t, http.StatusOK, listRec.Code)
 
@@ -211,46 +210,19 @@ func TestTenantSelection_ListTenants(t *testing.T) {
 }
 
 func TestTenantSelection_Success(t *testing.T) {
-	ctx := context.Background()
-	_, mockOIDC, router := setupOAuthHandler(t, "Select Tenant A "+uuid.New().String()[:8])
+	env := setupMultiTenantTest(t)
 
-	identity := Identity{
-		Issuer:            mockOIDC.IssuerURL(),
-		Subject:           "user-select-1",
-		Email:             "select@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "selectuser",
-	}
-	store := newTestStore(t, "Select Tenant B "+uuid.New().String()[:8])
-	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
-	require.NoError(t, err)
-	secondTenantID := addSecondTenant(t, userRef.UserID, "Target Org "+uuid.New().String()[:8])
-
-	testUser := &testoidc.TestUser{
-		Subject:           "user-select-1",
-		Email:             "select@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "selectuser",
-	}
-
-	state, cookies := doAuthorize(t, router)
-	code := mockOIDC.CreateAuthCode(testUser)
-	rec := doCallback(t, router, code, state, cookies, http.Header{
-		"Accept": {"application/json"},
-	})
-	require.Equal(t, http.StatusConflict, rec.Code)
-	sessionCookies := rec.Result().Cookies()
-	require.NotEmpty(t, sessionCookies)
+	_, sessionCookies := doAuthorizeAndCallbackJSON(t, env)
 
 	selectReq := httptest.NewRequest("POST", "/tenant/select", strings.NewReader(
-		`{"tenant_id":"`+secondTenantID.String()+`"}`,
+		`{"tenant_id":"`+env.secondTenantID.String()+`"}`,
 	))
 	selectReq.Header.Set("Content-Type", "application/json")
 	for _, c := range sessionCookies {
 		selectReq.AddCookie(c)
 	}
 	selectRec := httptest.NewRecorder()
-	router.ServeHTTP(selectRec, selectReq)
+	env.router.ServeHTTP(selectRec, selectReq)
 
 	assert.Equal(t, http.StatusNoContent, selectRec.Code)
 }
