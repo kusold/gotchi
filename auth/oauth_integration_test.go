@@ -91,6 +91,10 @@ func doCallback(t *testing.T, router chi.Router, code, state string, cookies []*
 	return rec
 }
 
+func uniqueSuffix() string {
+	return uuid.New().String()[:8]
+}
+
 func addSecondTenant(t *testing.T, userID uuid.UUID, tenantName string) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
@@ -103,31 +107,22 @@ func addSecondTenant(t *testing.T, userID uuid.UUID, tenantName string) uuid.UUI
 	return tenantID
 }
 
-type multiTenantEnv struct {
-	mockOIDC       *testoidc.MockOIDCProvider
-	router         chi.Router
-	testUser       *testoidc.TestUser
-	secondTenantID uuid.UUID
-}
-
-func setupMultiTenantTest(t *testing.T) multiTenantEnv {
+func provisionUserWithSecondTenant(t *testing.T, issuer string) (*testoidc.TestUser, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	suffix := uuid.New().String()[:8]
-
-	_, mockOIDC, router := setupOAuthHandler(t, "MT Primary "+suffix)
+	suffix := uniqueSuffix()
 
 	identity := Identity{
-		Issuer:            mockOIDC.IssuerURL(),
+		Issuer:            issuer,
 		Subject:           "user-mt-" + suffix,
 		Email:             suffix + "@example.com",
 		EmailVerified:     true,
 		PreferredUsername: "mt-" + suffix,
 	}
-	store := newTestStore(t, "MT Secondary "+suffix)
+	store := newTestStore(t, "Secondary "+suffix)
 	userRef, err := store.ResolveOrProvisionUser(ctx, identity)
 	require.NoError(t, err)
-	secondTenantID := addSecondTenant(t, userRef.UserID, "MT Second Org "+suffix)
+	secondTenantID := addSecondTenant(t, userRef.UserID, "Second Org "+suffix)
 
 	testUser := &testoidc.TestUser{
 		Subject:           identity.Subject,
@@ -136,28 +131,36 @@ func setupMultiTenantTest(t *testing.T) multiTenantEnv {
 		PreferredUsername: identity.PreferredUsername,
 	}
 
-	return multiTenantEnv{
-		mockOIDC:       mockOIDC,
-		router:         router,
-		testUser:       testUser,
-		secondTenantID: secondTenantID,
-	}
+	return testUser, secondTenantID
 }
 
-func doAuthorizeAndCallbackJSON(t *testing.T, env multiTenantEnv) (*httptest.ResponseRecorder, []*http.Cookie) {
+func doAuthorizeAndCallback(t *testing.T, router chi.Router, mockOIDC *testoidc.MockOIDCProvider, testUser *testoidc.TestUser, extraHeaders ...http.Header) (*httptest.ResponseRecorder, []*http.Cookie) {
 	t.Helper()
 
-	state, cookies := doAuthorize(t, env.router)
-	code := env.mockOIDC.CreateAuthCode(env.testUser)
-	rec := doCallback(t, env.router, code, state, cookies, http.Header{
-		"Accept": {"application/json"},
-	})
+	state, cookies := doAuthorize(t, router)
+	code := mockOIDC.CreateAuthCode(testUser)
+	rec := doCallback(t, router, code, state, cookies, extraHeaders...)
 
 	return rec, rec.Result().Cookies()
 }
 
+func doSelectTenant(t *testing.T, router chi.Router, sessionCookies []*http.Cookie, tenantID uuid.UUID) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest("POST", "/tenant/select", strings.NewReader(
+		`{"tenant_id":"`+tenantID.String()+`"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	for _, c := range sessionCookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestOAuthFlow_SingleTenant(t *testing.T) {
-	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+uuid.New().String()[:8])
+	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+uniqueSuffix())
 
 	testUser := &testoidc.TestUser{
 		Subject:           "user-single-1",
@@ -177,9 +180,12 @@ func TestOAuthFlow_SingleTenant(t *testing.T) {
 }
 
 func TestOAuthFlow_MultiTenant_RequiresSelection(t *testing.T) {
-	env := setupMultiTenantTest(t)
+	_, mockOIDC, router := setupOAuthHandler(t, "Multi Tenant "+uniqueSuffix())
+	testUser, _ := provisionUserWithSecondTenant(t, mockOIDC.IssuerURL())
 
-	rec, _ := doAuthorizeAndCallbackJSON(t, env)
+	rec, _ := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
+		"Accept": {"application/json"},
+	})
 
 	assert.Equal(t, http.StatusConflict, rec.Code)
 
@@ -190,9 +196,12 @@ func TestOAuthFlow_MultiTenant_RequiresSelection(t *testing.T) {
 }
 
 func TestTenantSelection_ListTenants(t *testing.T) {
-	env := setupMultiTenantTest(t)
+	_, mockOIDC, router := setupOAuthHandler(t, "List Tenants "+uniqueSuffix())
+	testUser, _ := provisionUserWithSecondTenant(t, mockOIDC.IssuerURL())
 
-	_, sessionCookies := doAuthorizeAndCallbackJSON(t, env)
+	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
+		"Accept": {"application/json"},
+	})
 
 	listReq := httptest.NewRequest("GET", "/tenants", nil)
 	listReq.Header.Set("Accept", "application/json")
@@ -200,7 +209,7 @@ func TestTenantSelection_ListTenants(t *testing.T) {
 		listReq.AddCookie(c)
 	}
 	listRec := httptest.NewRecorder()
-	env.router.ServeHTTP(listRec, listReq)
+	router.ServeHTTP(listRec, listReq)
 
 	assert.Equal(t, http.StatusOK, listRec.Code)
 
@@ -210,25 +219,19 @@ func TestTenantSelection_ListTenants(t *testing.T) {
 }
 
 func TestTenantSelection_Success(t *testing.T) {
-	env := setupMultiTenantTest(t)
+	_, mockOIDC, router := setupOAuthHandler(t, "Select Tenant "+uniqueSuffix())
+	testUser, secondTenantID := provisionUserWithSecondTenant(t, mockOIDC.IssuerURL())
 
-	_, sessionCookies := doAuthorizeAndCallbackJSON(t, env)
+	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
+		"Accept": {"application/json"},
+	})
 
-	selectReq := httptest.NewRequest("POST", "/tenant/select", strings.NewReader(
-		`{"tenant_id":"`+env.secondTenantID.String()+`"}`,
-	))
-	selectReq.Header.Set("Content-Type", "application/json")
-	for _, c := range sessionCookies {
-		selectReq.AddCookie(c)
-	}
-	selectRec := httptest.NewRecorder()
-	env.router.ServeHTTP(selectRec, selectReq)
-
-	assert.Equal(t, http.StatusNoContent, selectRec.Code)
+	rec := doSelectTenant(t, router, sessionCookies, secondTenantID)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
 func TestTenantSelection_UnauthorizedTenant(t *testing.T) {
-	_, mockOIDC, router := setupOAuthHandler(t, "Unauthorized Tenant "+uuid.New().String()[:8])
+	_, mockOIDC, router := setupOAuthHandler(t, "Unauthorized Tenant "+uniqueSuffix())
 
 	testUser := &testoidc.TestUser{
 		Subject:           "user-unauth-1",
@@ -237,26 +240,11 @@ func TestTenantSelection_UnauthorizedTenant(t *testing.T) {
 		PreferredUsername: "unauthuser",
 	}
 
-	state, cookies := doAuthorize(t, router)
-	code := mockOIDC.CreateAuthCode(testUser)
-	rec := doCallback(t, router, code, state, cookies)
-	require.Equal(t, http.StatusSeeOther, rec.Code)
-
-	sessionCookies := rec.Result().Cookies()
+	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser)
 	require.NotEmpty(t, sessionCookies)
 
-	fakeTenantID := uuid.New()
-	selectReq := httptest.NewRequest("POST", "/tenant/select", strings.NewReader(
-		`{"tenant_id":"`+fakeTenantID.String()+`"}`,
-	))
-	selectReq.Header.Set("Content-Type", "application/json")
-	for _, c := range sessionCookies {
-		selectReq.AddCookie(c)
-	}
-	selectRec := httptest.NewRecorder()
-	router.ServeHTTP(selectRec, selectReq)
-
-	assert.Equal(t, http.StatusForbidden, selectRec.Code)
+	rec := doSelectTenant(t, router, sessionCookies, uuid.New())
+	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestOAuthCallback_InvalidState(t *testing.T) {
