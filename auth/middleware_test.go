@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -174,4 +176,287 @@ func TestRequireAuthenticated_UIMode_RedirectsToTenantPicker(t *testing.T) {
 
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Contains(t, rec.Header().Get("Location"), "/auth/tenants")
+}
+
+// --- AllowPathsWithoutTenant tests ---
+
+func TestRequireAuthenticated_AllowPathsWithoutTenant_ExactMatch(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+	userID := uuid.New()
+
+	cookies := withSessionClaims(t, sessionMgr, SessionClaims{
+		Authenticated:  true,
+		UserID:         userID,
+		ActiveTenantID: nil, // no tenant selected
+	})
+
+	var called bool
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{
+			Mode:                    ModeAPI,
+			AllowPathsWithoutTenant: []string{"/allowed-path"},
+		})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/allowed-path", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, called, "handler should be called for allowed path without tenant")
+}
+
+func TestRequireAuthenticated_AllowPathsWithoutTenant_WildcardMatch(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+	userID := uuid.New()
+
+	cookies := withSessionClaims(t, sessionMgr, SessionClaims{
+		Authenticated:  true,
+		UserID:         userID,
+		ActiveTenantID: nil,
+	})
+
+	var called bool
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{
+			Mode:                    ModeAPI,
+			AllowPathsWithoutTenant: []string{"/api/public/*"},
+		})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/api/public/health", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, called, "handler should be called for wildcard-matched path")
+}
+
+func TestRequireAuthenticated_AllowPathsWithoutTenant_NonMatchingPath(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+	userID := uuid.New()
+
+	cookies := withSessionClaims(t, sessionMgr, SessionClaims{
+		Authenticated:  true,
+		UserID:         userID,
+		ActiveTenantID: nil,
+	})
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called for non-matching path without tenant")
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{
+			Mode:                    ModeAPI,
+			AllowPathsWithoutTenant: []string{"/allowed-path"},
+		})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/not-allowed", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// --- Legacy context key tests ---
+
+type legacyTenantKey struct{}
+type legacyClaimsKey struct{}
+
+func TestRequireAuthenticated_LegacyTenantContextKey(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+	tenantID := uuid.New()
+	userID := uuid.New()
+
+	cookies := withSessionClaims(t, sessionMgr, SessionClaims{
+		Authenticated:  true,
+		UserID:         userID,
+		ActiveTenantID: &tenantID,
+	})
+
+	var capturedCtx context.Context
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCtx = r.Context()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{
+			Mode:                   ModeAPI,
+			LegacyTenantContextKey: legacyTenantKey{},
+		})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify the legacy key has the tenant ID as a string
+	legacyVal, ok := capturedCtx.Value(legacyTenantKey{}).(string)
+	require.True(t, ok, "legacy tenant key should be set in context")
+	assert.Equal(t, tenantID.String(), legacyVal)
+
+	// Verify the standard tenantctx key is also set
+	gotTenantID, ok := tenantctx.TenantID(capturedCtx)
+	assert.True(t, ok)
+	assert.Equal(t, tenantID, gotTenantID)
+}
+
+func TestRequireAuthenticated_LegacyClaimsContextKey(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+	tenantID := uuid.New()
+	userID := uuid.New()
+
+	cookies := withSessionClaims(t, sessionMgr, SessionClaims{
+		Authenticated:  true,
+		UserID:         userID,
+		Issuer:         "test-issuer",
+		Subject:        "test-subject",
+		ActiveTenantID: &tenantID,
+	})
+
+	var capturedCtx context.Context
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCtx = r.Context()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{
+			Mode:                   ModeAPI,
+			LegacyClaimsContextKey: legacyClaimsKey{},
+		})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	legacyClaims, ok := capturedCtx.Value(legacyClaimsKey{}).(SessionClaims)
+	require.True(t, ok, "legacy claims key should be set in context")
+	assert.Equal(t, userID, legacyClaims.UserID)
+	assert.Equal(t, "test-issuer", legacyClaims.Issuer)
+}
+
+// --- API response body format tests ---
+
+func TestRequireAuthenticated_APIMode_UnauthorizedResponseBody(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called")
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{Mode: ModeAPI})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	body, err := io.ReadAll(rec.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "unauthorized")
+}
+
+func TestRequireAuthenticated_APIMode_TenantRequiredResponseBody(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+	userID := uuid.New()
+
+	cookies := withSessionClaims(t, sessionMgr, SessionClaims{
+		Authenticated:  true,
+		UserID:         userID,
+		ActiveTenantID: nil,
+	})
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called")
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{Mode: ModeAPI})(testHandler),
+	)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var respBody map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&respBody))
+	assert.Equal(t, "tenant_selection_required", respBody["error"])
+	assert.Equal(t, true, respBody["tenant_selection_required"])
+}
+
+// --- Corrupted session data test ---
+
+func TestRequireAuthenticated_CorruptedSessionData(t *testing.T) {
+	sessionMgr := setupSessionManager(t)
+
+	// Write a non-SessionClaims value into the session under the auth key
+	setHandler := sessionMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionMgr.Put(r.Context(), DefaultSessionKey, "not-a-claims-struct")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/setup", nil)
+	rec := httptest.NewRecorder()
+	setHandler.ServeHTTP(rec, req)
+	cookies := rec.Result().Cookies()
+	require.NotEmpty(t, cookies)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called with corrupted session")
+	})
+
+	chain := sessionMgr.LoadAndSave(
+		RequireAuthenticated(sessionMgr, MiddlewareConfig{Mode: ModeAPI})(testHandler),
+	)
+
+	req = httptest.NewRequest("GET", "/test", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	rec = httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code, "corrupted session should be treated as unauthenticated")
 }
