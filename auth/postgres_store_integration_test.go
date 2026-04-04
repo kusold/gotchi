@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 
@@ -19,11 +20,12 @@ func TestMain(m *testing.M) {
 	testDB = testutil.SetupTestDB(m)
 	if testDB == nil {
 		fmt.Println("Failed to setup test database")
-		return
+		os.Exit(1)
 	}
-	defer testDB.Close()
 
-	m.Run()
+	code := m.Run()
+	testDB.Close()
+	os.Exit(code)
 }
 
 // newTestStore creates a PostgresIdentityStore with a unique tenant name for test isolation
