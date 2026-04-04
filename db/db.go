@@ -2,12 +2,14 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jackc/pgx/v5/tracelog"
@@ -146,23 +148,39 @@ func (m *Manager) setupMultitenancy(cfg *pgxpool.Config) *pgxpool.Config {
 			return true
 		}
 		if _, err := conn.Exec(ctx, setTenantSQL, tenantID); err != nil {
-			// Log the error but don't fail the acquire
-			// The function may not exist yet during initial migrations
-			slog.Debug("failed to set tenant on postgres connection", "err", err)
+			if isUndefinedFunctionError(err) {
+				// Tolerate during initial migrations when set_tenant doesn't exist yet
+				slog.Warn("set_tenant function not found, tenant not set on connection", "err", err)
+				return true
+			}
+			slog.Error("failed to set tenant on postgres connection", "err", err)
+			return false
 		}
 		return true
 	}
 
 	cfg.AfterRelease = func(conn *pgx.Conn) bool {
 		if _, err := conn.Exec(context.Background(), setTenantSQL, ""); err != nil {
-			// Log the error but don't destroy the connection
-			// The function may not exist yet during initial migrations
-			slog.Debug("failed to clear tenant on postgres connection", "err", err)
+			if isUndefinedFunctionError(err) {
+				// Tolerate during initial migrations when set_tenant doesn't exist yet
+				slog.Warn("set_tenant function not found, tenant not cleared on connection", "err", err)
+				return true
+			}
+			slog.Error("failed to clear tenant on postgres connection", "err", err)
+			return false
 		}
 		return true
 	}
 
 	return cfg
+}
+
+// isUndefinedFunctionError returns true if the error is a PostgreSQL
+// "undefined_function" error (SQLSTATE 42883). This occurs when set_tenant()
+// hasn't been created yet, e.g. during initial migrations.
+func isUndefinedFunctionError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42883"
 }
 
 func setupTracing(cfg *pgxpool.Config) *pgxpool.Config {
