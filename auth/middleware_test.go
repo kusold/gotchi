@@ -428,48 +428,112 @@ func TestRequireAuthenticated_APIMode_TenantRequiredResponseBody(t *testing.T) {
 
 // --- isTenantOptionalPath unit tests ---
 
-func TestIsTenantOptionalPath_ExactMatch(t *testing.T) {
-	assert.True(t, isTenantOptionalPath("/auth/tenants", []string{"/auth/tenants"}))
-}
+func TestIsTenantOptionalPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		allowPaths []string
+		want       bool
+	}{
+		// Exact match cases
+		{
+			name:       "exact match single path",
+			path:       "/auth/tenants",
+			allowPaths: []string{"/auth/tenants"},
+			want:       true,
+		},
+		{
+			name:       "exact match among multiple paths",
+			path:       "/auth/tenant/select",
+			allowPaths: []string{"/auth/tenants", "/auth/tenant/select"},
+			want:       true,
+		},
+		{
+			name:       "no exact match",
+			path:       "/dashboard",
+			allowPaths: []string{"/auth/tenants", "/auth/tenant/select"},
+			want:       false,
+		},
 
-func TestIsTenantOptionalPath_ExactMatch_MultiplePaths(t *testing.T) {
-	assert.True(t, isTenantOptionalPath("/auth/tenant/select", []string{"/auth/tenants", "/auth/tenant/select"}))
-}
+		// Wildcard prefix match cases
+		{
+			name:       "wildcard prefix match",
+			path:       "/api/public/health",
+			allowPaths: []string{"/api/public/*"},
+			want:       true,
+		},
+		{
+			name:       "wildcard prefix match deep path",
+			path:       "/api/public/v1/status",
+			allowPaths: []string{"/api/public/*"},
+			want:       true,
+		},
+		{
+			name:       "wildcard prefix no match",
+			path:       "/api/private/data",
+			allowPaths: []string{"/api/public/*"},
+			want:       false,
+		},
+		{
+			name:       "wildcard does not match exact prefix without trailing slash",
+			path:       "/api/public",
+			allowPaths: []string{"/api/public/*"},
+			want:       false,
+		},
+		{
+			name:       "bare wildcard matches any path",
+			path:       "/anything/at/all",
+			allowPaths: []string{"*"},
+			want:       true,
+		},
 
-func TestIsTenantOptionalPath_ExactMatch_NoMatch(t *testing.T) {
-	assert.False(t, isTenantOptionalPath("/dashboard", []string{"/auth/tenants", "/auth/tenant/select"}))
-}
+		// Edge cases
+		{
+			name:       "empty string entry is skipped",
+			path:       "/anything",
+			allowPaths: []string{""},
+			want:       false,
+		},
+		{
+			name:       "empty allow paths slice",
+			path:       "/any",
+			allowPaths: []string{},
+			want:       false,
+		},
 
-func TestIsTenantOptionalPath_PrefixMatch(t *testing.T) {
-	assert.True(t, isTenantOptionalPath("/api/public/health", []string{"/api/public/*"}))
-}
+		// Mixed paths
+		{
+			name:       "mixed paths - no match skips empty string",
+			path:       "/anything",
+			allowPaths: []string{"", "/exact", "/prefix/*"},
+			want:       false,
+		},
+		{
+			name:       "mixed paths - exact match",
+			path:       "/exact",
+			allowPaths: []string{"", "/exact", "/prefix/*"},
+			want:       true,
+		},
+		{
+			name:       "mixed paths - prefix match",
+			path:       "/prefix/sub",
+			allowPaths: []string{"", "/exact", "/prefix/*"},
+			want:       true,
+		},
+		{
+			name:       "mixed paths - prefix without trailing slash does not match wildcard",
+			path:       "/prefix",
+			allowPaths: []string{"", "/exact", "/prefix/*"},
+			want:       false,
+		},
+	}
 
-func TestIsTenantOptionalPath_PrefixMatch_DeepPath(t *testing.T) {
-	assert.True(t, isTenantOptionalPath("/api/public/v1/status", []string{"/api/public/*"}))
-}
-
-func TestIsTenantOptionalPath_PrefixMatch_NoMatch(t *testing.T) {
-	assert.False(t, isTenantOptionalPath("/api/private/data", []string{"/api/public/*"}))
-}
-
-func TestIsTenantOptionalPath_EmptyAllowedPath(t *testing.T) {
-	assert.False(t, isTenantOptionalPath("/anything", []string{""}))
-}
-
-func TestIsTenantOptionalPath_MixedAllowedPaths(t *testing.T) {
-	allowPaths := []string{"", "/exact", "/prefix/*"}
-	assert.False(t, isTenantOptionalPath("/anything", allowPaths), "empty string should be skipped")
-	assert.True(t, isTenantOptionalPath("/exact", allowPaths), "exact match should work")
-	assert.True(t, isTenantOptionalPath("/prefix/sub", allowPaths), "prefix match should work")
-	assert.False(t, isTenantOptionalPath("/prefix", allowPaths), "prefix without trailing slash should not match wildcard /prefix/*")
-}
-
-func TestIsTenantOptionalPath_EmptyAllowPaths(t *testing.T) {
-	assert.False(t, isTenantOptionalPath("/any", []string{}))
-}
-
-func TestIsTenantOptionalPath_WildcardDoesNotMatchExactPrefix(t *testing.T) {
-	assert.False(t, isTenantOptionalPath("/api/public", []string{"/api/public/*"}))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isTenantOptionalPath(tt.path, tt.allowPaths)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 // --- MiddlewareConfig.withDefaults tests ---
@@ -484,10 +548,20 @@ func TestMiddlewareConfig_WithDefaults(t *testing.T) {
 }
 
 func TestMiddlewareConfig_WithDefaults_PreservesExplicitValues(t *testing.T) {
-	customPath := "/custom-login"
-	cfg := MiddlewareConfig{LoginPath: customPath, Mode: ModeUI}.withDefaults()
-	assert.Equal(t, customPath, cfg.LoginPath)
+	customAllowPaths := []string{"/custom/path"}
+	cfg := MiddlewareConfig{
+		SessionKey:              "custom-session",
+		LoginPath:               "/custom-login",
+		TenantPickerPath:        "/custom-tenants",
+		Mode:                    ModeUI,
+		AllowPathsWithoutTenant: customAllowPaths,
+	}.withDefaults()
+
+	assert.Equal(t, "custom-session", cfg.SessionKey)
+	assert.Equal(t, "/custom-login", cfg.LoginPath)
+	assert.Equal(t, "/custom-tenants", cfg.TenantPickerPath)
 	assert.Equal(t, ModeUI, cfg.Mode)
+	assert.Equal(t, customAllowPaths, cfg.AllowPathsWithoutTenant)
 }
 
 // --- Corrupted session data test ---
