@@ -426,6 +426,70 @@ func TestRequireAuthenticated_APIMode_TenantRequiredResponseBody(t *testing.T) {
 	assert.Equal(t, true, respBody["tenant_selection_required"])
 }
 
+// --- isTenantOptionalPath unit tests ---
+
+func TestIsTenantOptionalPath_ExactMatch(t *testing.T) {
+	assert.True(t, isTenantOptionalPath("/auth/tenants", []string{"/auth/tenants"}))
+}
+
+func TestIsTenantOptionalPath_ExactMatch_MultiplePaths(t *testing.T) {
+	assert.True(t, isTenantOptionalPath("/auth/tenant/select", []string{"/auth/tenants", "/auth/tenant/select"}))
+}
+
+func TestIsTenantOptionalPath_ExactMatch_NoMatch(t *testing.T) {
+	assert.False(t, isTenantOptionalPath("/dashboard", []string{"/auth/tenants", "/auth/tenant/select"}))
+}
+
+func TestIsTenantOptionalPath_PrefixMatch(t *testing.T) {
+	assert.True(t, isTenantOptionalPath("/api/public/health", []string{"/api/public/*"}))
+}
+
+func TestIsTenantOptionalPath_PrefixMatch_DeepPath(t *testing.T) {
+	assert.True(t, isTenantOptionalPath("/api/public/v1/status", []string{"/api/public/*"}))
+}
+
+func TestIsTenantOptionalPath_PrefixMatch_NoMatch(t *testing.T) {
+	assert.False(t, isTenantOptionalPath("/api/private/data", []string{"/api/public/*"}))
+}
+
+func TestIsTenantOptionalPath_EmptyAllowedPath(t *testing.T) {
+	assert.False(t, isTenantOptionalPath("/anything", []string{""}))
+}
+
+func TestIsTenantOptionalPath_MixedAllowedPaths(t *testing.T) {
+	allowPaths := []string{"", "/exact", "/prefix/*"}
+	assert.False(t, isTenantOptionalPath("/anything", allowPaths), "empty string should be skipped")
+	assert.True(t, isTenantOptionalPath("/exact", allowPaths), "exact match should work")
+	assert.True(t, isTenantOptionalPath("/prefix/sub", allowPaths), "prefix match should work")
+	assert.False(t, isTenantOptionalPath("/prefix", allowPaths), "prefix without trailing slash should not match wildcard /prefix/*")
+}
+
+func TestIsTenantOptionalPath_EmptyAllowPaths(t *testing.T) {
+	assert.False(t, isTenantOptionalPath("/any", []string{}))
+}
+
+func TestIsTenantOptionalPath_WildcardDoesNotMatchExactPrefix(t *testing.T) {
+	assert.False(t, isTenantOptionalPath("/api/public", []string{"/api/public/*"}))
+}
+
+// --- MiddlewareConfig.withDefaults tests ---
+
+func TestMiddlewareConfig_WithDefaults(t *testing.T) {
+	cfg := MiddlewareConfig{}.withDefaults()
+	assert.Equal(t, DefaultSessionKey, cfg.SessionKey)
+	assert.Equal(t, DefaultLoginPath, cfg.LoginPath)
+	assert.Equal(t, DefaultTenantPickerPath, cfg.TenantPickerPath)
+	assert.Equal(t, ModeAPI, cfg.Mode)
+	assert.Equal(t, []string{DefaultTenantPickerPath, "/auth/tenant/select"}, cfg.AllowPathsWithoutTenant)
+}
+
+func TestMiddlewareConfig_WithDefaults_PreservesExplicitValues(t *testing.T) {
+	customPath := "/custom-login"
+	cfg := MiddlewareConfig{LoginPath: customPath, Mode: ModeUI}.withDefaults()
+	assert.Equal(t, customPath, cfg.LoginPath)
+	assert.Equal(t, ModeUI, cfg.Mode)
+}
+
 // --- Corrupted session data test ---
 
 func TestRequireAuthenticated_CorruptedSessionData(t *testing.T) {
