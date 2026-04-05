@@ -17,6 +17,7 @@ type Config struct {
 	TenantsPath      string
 	TenantSelectPath string
 	StateCookieName  string
+	CookieSecure     *bool
 }
 
 func (c Config) withDefaults() Config {
@@ -47,6 +48,10 @@ func (c Config) withDefaults() Config {
 	}
 	if cfg.StateCookieName == "" {
 		cfg.StateCookieName = DefaultStateCookieName
+	}
+	if cfg.CookieSecure == nil {
+		secure := true
+		cfg.CookieSecure = &secure
 	}
 	return cfg
 }
