@@ -468,8 +468,8 @@ func TestIsTenantOptionalPath_EmptyAllowPaths(t *testing.T) {
 	assert.False(t, isTenantOptionalPath("/any", []string{}))
 }
 
-func TestIsTenantOptionalPath_WildcardMatchesExactPrefix(t *testing.T) {
-	assert.True(t, isTenantOptionalPath("/api/public", []string{"/api/public/*"}))
+func TestIsTenantOptionalPath_WildcardDoesNotMatchExactPrefix(t *testing.T) {
+	assert.False(t, isTenantOptionalPath("/api/public", []string{"/api/public/*"}))
 }
 
 // --- MiddlewareConfig.withDefaults tests ---
