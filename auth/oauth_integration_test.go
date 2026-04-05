@@ -93,7 +93,7 @@ func doCallback(t *testing.T, router chi.Router, code, state string, cookies []*
 }
 
 func uniqueSuffix() string {
-	return uuid.New().String()[:8]
+	return uuid.New().String()[:8] // 8 hex chars provides ~4 billion unique values
 }
 
 func addSecondTenant(t *testing.T, store *PostgresIdentityStore, userID uuid.UUID, tenantName string) uuid.UUID {
@@ -138,14 +138,14 @@ func provisionUserWithSecondTenant(t *testing.T, issuer string) (*testoidc.TestU
 	return testUser, secondTenantID
 }
 
-func doAuthorizeAndCallback(t *testing.T, router chi.Router, mockOIDC *testoidc.MockOIDCProvider, testUser *testoidc.TestUser, extraHeaders ...http.Header) (*httptest.ResponseRecorder, []*http.Cookie) {
+func doAuthorizeAndCallback(t *testing.T, router chi.Router, mockOIDC *testoidc.MockOIDCProvider, testUser *testoidc.TestUser, extraHeaders ...http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 
 	state, cookies := doAuthorize(t, router)
 	code := mockOIDC.CreateAuthCode(testUser)
 	rec := doCallback(t, router, code, state, cookies, extraHeaders...)
 
-	return rec, rec.Result().Cookies()
+	return rec
 }
 
 func doSelectTenant(t *testing.T, router chi.Router, sessionCookies []*http.Cookie, tenantID uuid.UUID) *httptest.ResponseRecorder {
@@ -164,16 +164,9 @@ func doSelectTenant(t *testing.T, router chi.Router, sessionCookies []*http.Cook
 }
 
 func TestOAuthFlow_SingleTenant(t *testing.T) {
-	suffix := uniqueSuffix()
-	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+suffix)
+	_, mockOIDC, router := setupOAuthHandler(t, "Single Tenant "+uniqueSuffix())
 
-	testUser := &testoidc.TestUser{
-		Subject:           "user-single-" + suffix,
-		Email:             "single-" + suffix + "@example.com",
-		EmailVerified:     true,
-		Name:              "Single Tenant User",
-		PreferredUsername: "singleuser-" + suffix,
-	}
+	testUser := testoidc.NewTestUser("single").WithName("Single Tenant User").Build()
 
 	state, cookies := doAuthorize(t, router)
 	code := mockOIDC.CreateAuthCode(testUser)
@@ -188,7 +181,7 @@ func TestOAuthFlow_MultiTenant_RequiresSelection(t *testing.T) {
 	_, mockOIDC, router := setupOAuthHandler(t, "Multi Tenant "+uniqueSuffix())
 	testUser, _ := provisionUserWithSecondTenant(t, mockOIDC.IssuerURL())
 
-	rec, _ := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
+	rec := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
 		"Accept": {"application/json"},
 	})
 
@@ -204,9 +197,10 @@ func TestTenantSelection_ListTenants(t *testing.T) {
 	_, mockOIDC, router := setupOAuthHandler(t, "List Tenants "+uniqueSuffix())
 	testUser, _ := provisionUserWithSecondTenant(t, mockOIDC.IssuerURL())
 
-	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
+	rec := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
 		"Accept": {"application/json"},
 	})
+	sessionCookies := rec.Result().Cookies()
 
 	listReq := httptest.NewRequest("GET", "/tenants", nil)
 	listReq.Header.Set("Accept", "application/json")
@@ -227,11 +221,12 @@ func TestTenantSelection_Success(t *testing.T) {
 	_, mockOIDC, router := setupOAuthHandler(t, "Select Tenant "+uniqueSuffix())
 	testUser, secondTenantID := provisionUserWithSecondTenant(t, mockOIDC.IssuerURL())
 
-	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
+	rec := doAuthorizeAndCallback(t, router, mockOIDC, testUser, http.Header{
 		"Accept": {"application/json"},
 	})
+	sessionCookies := rec.Result().Cookies()
 
-	rec := doSelectTenant(t, router, sessionCookies, secondTenantID)
+	rec = doSelectTenant(t, router, sessionCookies, secondTenantID)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 }
 
@@ -239,22 +234,18 @@ func TestTenantSelection_UnauthorizedTenant(t *testing.T) {
 	suffix := uniqueSuffix()
 	_, mockOIDC, router := setupOAuthHandler(t, "Unauthorized Tenant "+suffix)
 
-	testUser := &testoidc.TestUser{
-		Subject:           "user-unauth-" + suffix,
-		Email:             "unauth-" + suffix + "@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "unauthuser-" + suffix,
-	}
+	testUser := testoidc.NewTestUser("unauth").Build()
 
-	_, sessionCookies := doAuthorizeAndCallback(t, router, mockOIDC, testUser)
+	rec := doAuthorizeAndCallback(t, router, mockOIDC, testUser)
+	sessionCookies := rec.Result().Cookies()
 	require.NotEmpty(t, sessionCookies)
 
-	rec := doSelectTenant(t, router, sessionCookies, uuid.New())
+	rec = doSelectTenant(t, router, sessionCookies, uuid.New())
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestOAuthCallback_InvalidState(t *testing.T) {
-	_, _, router := setupOAuthHandler(t, "Invalid State "+uuid.New().String()[:8])
+	_, _, router := setupOAuthHandler(t, "Invalid State "+uniqueSuffix())
 
 	_, cookies := doAuthorize(t, router)
 
@@ -265,7 +256,7 @@ func TestOAuthCallback_InvalidState(t *testing.T) {
 }
 
 func TestOAuthCallback_MissingStateCookie(t *testing.T) {
-	_, _, router := setupOAuthHandler(t, "Missing Cookie "+uuid.New().String()[:8])
+	_, _, router := setupOAuthHandler(t, "Missing Cookie "+uniqueSuffix())
 
 	rec := doCallback(t, router, "some-code", "some-state", nil)
 
@@ -274,7 +265,7 @@ func TestOAuthCallback_MissingStateCookie(t *testing.T) {
 }
 
 func TestOAuthCallback_InvalidCode(t *testing.T) {
-	_, _, router := setupOAuthHandler(t, "Invalid Code "+uuid.New().String()[:8])
+	_, _, router := setupOAuthHandler(t, "Invalid Code "+uniqueSuffix())
 
 	state, cookies := doAuthorize(t, router)
 
@@ -285,15 +276,9 @@ func TestOAuthCallback_InvalidCode(t *testing.T) {
 }
 
 func TestOAuthCallback_StateCookieClearedOnSuccess(t *testing.T) {
-	suffix := uniqueSuffix()
-	_, mockOIDC, router := setupOAuthHandler(t, "State Cleared "+suffix)
+	_, mockOIDC, router := setupOAuthHandler(t, "State Cleared "+uniqueSuffix())
 
-	testUser := &testoidc.TestUser{
-		Subject:           "user-clear-" + suffix,
-		Email:             "clear-" + suffix + "@example.com",
-		EmailVerified:     true,
-		PreferredUsername: "clearuser-" + suffix,
-	}
+	testUser := testoidc.NewTestUser("clear").Build()
 
 	state, cookies := doAuthorize(t, router)
 	code := mockOIDC.CreateAuthCode(testUser)
