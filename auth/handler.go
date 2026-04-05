@@ -57,7 +57,7 @@ func (h *OIDCHandler) AuthorizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setStateCookie(w, r, h.cfg.StateCookieName, state)
+	setStateCookie(w, h.cfg.StateCookieName, state, *h.cfg.CookieSecure)
 	http.Redirect(w, r, h.oidc.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -71,7 +71,7 @@ func (h *OIDCHandler) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "state did not match", http.StatusBadRequest)
 		return
 	}
-	clearStateCookie(w, h.cfg.StateCookieName)
+	clearStateCookie(w, h.cfg.StateCookieName, *h.cfg.CookieSecure)
 
 	code := r.URL.Query().Get("code")
 	token, err := h.oidc.Exchange(r.Context(), code)
@@ -313,24 +313,25 @@ func generateState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
-func setStateCookie(w http.ResponseWriter, r *http.Request, name, value string) {
+func setStateCookie(w http.ResponseWriter, name, value string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     "/",
 		MaxAge:   DefaultCookieMaxAgeSecond,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func clearStateCookie(w http.ResponseWriter, name string) {
+func clearStateCookie(w http.ResponseWriter, name string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
+		Secure:   secure,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0),
