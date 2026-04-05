@@ -26,6 +26,31 @@ type TestUser struct {
 	PreferredUsername string
 }
 
+type TestUserBuilder struct {
+	user TestUser
+}
+
+func NewTestUser(prefix string) *TestUserBuilder {
+	suffix := uuid.New().String()[:8]
+	return &TestUserBuilder{
+		user: TestUser{
+			Subject:           prefix + "-" + suffix,
+			Email:             prefix + "-" + suffix + "@example.com",
+			EmailVerified:     true,
+			PreferredUsername: prefix + "-" + suffix,
+		},
+	}
+}
+
+func (b *TestUserBuilder) WithName(name string) *TestUserBuilder {
+	b.user.Name = name
+	return b
+}
+
+func (b *TestUserBuilder) Build() *TestUser {
+	return &b.user
+}
+
 type MockOIDCProvider struct {
 	server      *httptest.Server
 	privateKey  *rsa.PrivateKey
