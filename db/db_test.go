@@ -78,8 +78,8 @@ func TestAddMigrationSource_DefaultDir(t *testing.T) {
 }
 
 func TestManager_Connect_Success(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	require.NoError(t, mgr.Connect(context.Background()))
@@ -88,8 +88,8 @@ func TestManager_Connect_Success(t *testing.T) {
 }
 
 func TestManager_Connect_Idempotent(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	require.NoError(t, mgr.Connect(context.Background()))
@@ -100,8 +100,8 @@ func TestManager_Connect_Idempotent(t *testing.T) {
 }
 
 func TestManager_Connect_WithSearchPath(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	ctx := context.Background()
 
@@ -128,8 +128,8 @@ func TestManager_Connect_WithSearchPath(t *testing.T) {
 }
 
 func TestManager_Ping_Success(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	require.NoError(t, mgr.Connect(context.Background()))
@@ -139,8 +139,8 @@ func TestManager_Ping_Success(t *testing.T) {
 }
 
 func TestManager_Close_DoubleClose(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	require.NoError(t, mgr.Connect(context.Background()))
@@ -152,8 +152,8 @@ func TestManager_Close_DoubleClose(t *testing.T) {
 }
 
 func TestManager_RunMigrations_EmptySources(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	require.NoError(t, mgr.Connect(context.Background()))
@@ -163,8 +163,8 @@ func TestManager_RunMigrations_EmptySources(t *testing.T) {
 }
 
 func TestManager_RunMigrations_SingleSource(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	mgr.AddMigrationSource(db.MigrationSource{
@@ -178,8 +178,8 @@ func TestManager_RunMigrations_SingleSource(t *testing.T) {
 }
 
 func TestManager_RunMigrations_MultipleSources(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	mgr.AddMigrationSource(db.MigrationSource{
@@ -197,8 +197,8 @@ func TestManager_RunMigrations_MultipleSources(t *testing.T) {
 }
 
 func TestManager_RunMigrations_Idempotent(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
 	mgr.AddMigrationSource(db.MigrationSource{
@@ -217,8 +217,8 @@ func TestManager_RunMigrations_Idempotent(t *testing.T) {
 }
 
 func TestManager_RunMigrations_FailedMigration(t *testing.T) {
-	if testDB == nil {
-		t.Skip("test database not available")
+	if testing.Short() {
+		t.Skip("skipping integration test")
 	}
 	badMigrationFS := fstest.MapFS{
 		"20990101000000_bad.sql": &fstest.MapFile{
