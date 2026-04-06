@@ -17,7 +17,10 @@ type Config struct {
 	TenantsPath      string
 	TenantSelectPath string
 	StateCookieName  string
-	CookieSecure     *bool
+	// CookieSecure controls the Secure flag on the state cookie.
+	// Defaults to true for security. Set to false only for development
+	// or when behind a TLS-terminating proxy that handles HTTPS.
+	CookieSecure *bool
 }
 
 func (c Config) withDefaults() Config {
