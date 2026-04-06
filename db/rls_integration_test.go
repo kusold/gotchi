@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,11 @@ const tenantSettingSQL = "SELECT COALESCE(current_setting('app.current_tenant', 
 var testDB *testutil.TestDB
 
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
 	testDB = testutil.SetupTestDB(m)
 	if testDB == nil {
 		fmt.Println("Failed to setup test database")
@@ -44,6 +50,9 @@ func newManagedPool(t *testing.T) *db.Manager {
 }
 
 func TestSetTenantFunction_SetsAndClearsConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	ctx := context.Background()
 	tenantID := uuid.New().String()
 
@@ -62,6 +71,9 @@ func TestSetTenantFunction_SetsAndClearsConfig(t *testing.T) {
 }
 
 func TestBeforeAcquire_SetsTenantOnConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := newManagedPool(t)
 	ctx := context.Background()
 	tenantID := uuid.New()
@@ -76,6 +88,9 @@ func TestBeforeAcquire_SetsTenantOnConnection(t *testing.T) {
 }
 
 func TestAfterRelease_ClearsTenantOnConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := newManagedPool(t)
 	ctx := context.Background()
 	tenantID := uuid.New()
@@ -94,6 +109,9 @@ func TestAfterRelease_ClearsTenantOnConnection(t *testing.T) {
 }
 
 func TestSystemTenant_DoesNotSetTenant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := newManagedPool(t)
 	ctx := context.Background()
 
@@ -107,6 +125,9 @@ func TestSystemTenant_DoesNotSetTenant(t *testing.T) {
 }
 
 func TestNoTenantContext_DoesNotSetTenant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := newManagedPool(t)
 	ctx := context.Background()
 
@@ -120,6 +141,9 @@ func TestNoTenantContext_DoesNotSetTenant(t *testing.T) {
 }
 
 func TestTenantSwitchingOnConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := newManagedPool(t)
 	ctx := context.Background()
 	tenantA := uuid.New()
@@ -142,6 +166,9 @@ func TestTenantSwitchingOnConnection(t *testing.T) {
 }
 
 func TestConcurrentTenantIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := newManagedPool(t)
 	ctx := context.Background()
 	tenantA := uuid.New()
@@ -263,6 +290,9 @@ func setupRLSTable(t *testing.T) *db.Manager {
 }
 
 func TestRLS_EnforcesTenantIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := setupRLSTable(t)
 
 	ctx := context.Background()
@@ -319,6 +349,9 @@ func TestRLS_EnforcesTenantIsolation(t *testing.T) {
 }
 
 func TestRLS_AdminBypassesIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := setupRLSTable(t)
 
 	ctx := context.Background()
@@ -353,6 +386,9 @@ func TestRLS_AdminBypassesIsolation(t *testing.T) {
 }
 
 func TestRLS_NoTenantSeesNoRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	mgr := setupRLSTable(t)
 
 	ctx := context.Background()
@@ -379,6 +415,9 @@ func TestRLS_NoTenantSeesNoRows(t *testing.T) {
 }
 
 func TestBeforeAcquire_GracefulDegradation_MissingFunction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 	ctx := context.Background()
 
 	// Create a manager with search_path pointing to a schema that has no set_tenant function
