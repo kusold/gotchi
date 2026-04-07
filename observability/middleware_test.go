@@ -16,12 +16,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newTestSessionManager creates a session manager with memory store for testing
 func newTestSessionManager(t *testing.T) *session.Manager {
 	t.Helper()
 	session.RegisterGobTypes(auth.SessionClaims{})
 	mgr := session.NewMemory(session.Config{})
 	return mgr
+}
+
+func setupTestLogger(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	original := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+	})
+	return &buf
+}
+
+func extractSessionToken(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+func setupSessionWithClaims(t *testing.T, sessionMgr *session.Manager, key string, value any) string {
+	t.Helper()
+	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionMgr.Put(r.Context(), key, value)
+		w.WriteHeader(http.StatusOK)
+	})
+	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
+	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	setupRec := httptest.NewRecorder()
+	wrappedSetup.ServeHTTP(setupRec, setupReq)
+	token := extractSessionToken(t, setupRec)
+	require.NotEmpty(t, token, "should have session token")
+	return token
 }
 
 func TestRequestID_Get(t *testing.T) {
@@ -79,20 +115,16 @@ func TestWithRequestID(t *testing.T) {
 	ctx := context.Background()
 	newCtx := WithRequestID(ctx, "my-request-id")
 
-	// Original context should not have the value
 	_, found := RequestID(ctx)
 	assert.False(t, found)
 
-	// New context should have the value
 	id, found := RequestID(newCtx)
 	assert.True(t, found)
 	assert.Equal(t, "my-request-id", id)
 }
 
 func TestCorrelationAndAudit_GeneratesUUID(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -104,20 +136,16 @@ func TestCorrelationAndAudit_GeneratesUUID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Should have generated a UUID (response header)
 	requestID := rec.Header().Get("X-Request-ID")
 	assert.NotEmpty(t, requestID)
 	_, err := uuid.Parse(requestID)
 	assert.NoError(t, err, "generated request ID should be a valid UUID")
 
-	// Log should contain the generated request_id
 	assert.Contains(t, logBuf.String(), "request_id="+requestID)
 }
 
 func TestCorrelationAndAudit_UsesProvidedRequestID(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
 	providedID := "custom-request-id-123"
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +159,6 @@ func TestCorrelationAndAudit_UsesProvidedRequestID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Should use the provided ID
 	assert.Equal(t, providedID, rec.Header().Get("X-Request-ID"))
 	assert.Contains(t, logBuf.String(), "request_id="+providedID)
 }
@@ -180,9 +207,7 @@ func TestCorrelationAndAudit_RecordsStatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var logBuf bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-			slog.SetDefault(logger)
+			logBuf := setupTestLogger(t)
 
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.statusCode)
@@ -201,9 +226,7 @@ func TestCorrelationAndAudit_RecordsStatusCodes(t *testing.T) {
 }
 
 func TestCorrelationAndAudit_LogsCorrectFields(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -219,7 +242,6 @@ func TestCorrelationAndAudit_LogsCorrectFields(t *testing.T) {
 
 	logOutput := logBuf.String()
 
-	// Check all expected fields are present
 	assert.Contains(t, logOutput, "request_id=req-123")
 	assert.Contains(t, logOutput, "method=POST")
 	assert.Contains(t, logOutput, "path=/api/users/123")
@@ -229,15 +251,12 @@ func TestCorrelationAndAudit_LogsCorrectFields(t *testing.T) {
 }
 
 func TestCorrelationAndAudit_NilSessionManager(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// nil sessionManager should not panic and should log without user/tenant fields
 	middleware := CorrelationAndAudit(nil, "")(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -247,15 +266,12 @@ func TestCorrelationAndAudit_NilSessionManager(t *testing.T) {
 		middleware.ServeHTTP(rec, req)
 	})
 
-	// Should not contain user_id or tenant_id since sessionManager is nil
 	assert.NotContains(t, logBuf.String(), "user_id=")
 	assert.NotContains(t, logBuf.String(), "tenant_id=")
 }
 
 func TestCorrelationAndAudit_WithSessionClaims(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	setupTestLogger(t)
 
 	sessionMgr := newTestSessionManager(t)
 	userID := uuid.New()
@@ -268,43 +284,27 @@ func TestCorrelationAndAudit_WithSessionClaims(t *testing.T) {
 		ActiveTenantID: &tenantID,
 	}
 
-	// Handler that sets claims in session, then processes request
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Wrap with LoadAndSave to enable session, then with our middleware
 	middleware := sessionMgr.LoadAndSave(CorrelationAndAudit(sessionMgr, "session")(handler))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 
-	// First request to set up session with claims
 	middleware.ServeHTTP(rec, req)
 
-	// Extract session token from cookie
-	cookies := rec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
+	sessionToken := extractSessionToken(t, rec)
 
-	// Second request with the session token - manually load claims
 	if sessionToken != "" {
-		var logBuf2 bytes.Buffer
-		logger2 := slog.New(slog.NewTextHandler(&logBuf2, nil))
-		slog.SetDefault(logger2)
+		logBuf2 := setupTestLogger(t)
 
 		ctx, err := sessionMgr.Load(context.Background(), sessionToken)
 		require.NoError(t, err)
 		sessionMgr.Put(ctx, "session", claims)
 
-		// Now make a request with this context
 		handler2 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Verify claims are accessible in handler
 			gotClaims, ok := sessionMgr.Get(r.Context(), "session").(auth.SessionClaims)
 			assert.True(t, ok)
 			assert.Equal(t, userID, gotClaims.UserID)
@@ -317,52 +317,22 @@ func TestCorrelationAndAudit_WithSessionClaims(t *testing.T) {
 		rec2 := httptest.NewRecorder()
 		middleware2.ServeHTTP(rec2, req2)
 
-		// Check that user_id appears in the log
-		// Note: The claims need to be set before the middleware reads them
+		_ = logBuf2.String()
 	}
 }
 
 func TestCorrelationAndAudit_SessionClaimsWithNilTenantID(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
-
 	userID := uuid.New()
 	claims := auth.SessionClaims{
 		Authenticated:  true,
 		UserID:         userID,
-		ActiveTenantID: nil, // No tenant selected
+		ActiveTenantID: nil,
 	}
 
 	sessionMgr := newTestSessionManager(t)
-
-	// First, make a request to set up the session
-	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionMgr.Put(r.Context(), "session", claims)
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
-	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
-	setupRec := httptest.NewRecorder()
-	wrappedSetup.ServeHTTP(setupRec, setupReq)
-
-	// Extract session token
-	cookies := setupRec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
-
-	require.NotEmpty(t, sessionToken, "should have session token")
-
-	// Now make the actual test request with claims already in session
+	sessionToken := setupSessionWithClaims(t, sessionMgr, "session", claims)
 	logOutput := makeRequestWithClaims(t, sessionMgr, sessionToken, claims)
 
-	// Should contain user_id but not tenant_id
 	assert.Contains(t, logOutput, "user_id="+userID.String())
 	assert.NotContains(t, logOutput, "tenant_id=")
 }
@@ -370,71 +340,21 @@ func TestCorrelationAndAudit_SessionClaimsWithNilTenantID(t *testing.T) {
 func TestCorrelationAndAudit_SessionClaimsNilUserID(t *testing.T) {
 	claims := auth.SessionClaims{
 		Authenticated:  true,
-		UserID:         uuid.Nil, // Nil UUID should not be logged
+		UserID:         uuid.Nil,
 		ActiveTenantID: nil,
 	}
 
 	sessionMgr := newTestSessionManager(t)
-
-	// First, make a request to set up the session
-	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionMgr.Put(r.Context(), "session", claims)
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
-	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
-	setupRec := httptest.NewRecorder()
-	wrappedSetup.ServeHTTP(setupRec, setupReq)
-
-	// Extract session token
-	cookies := setupRec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
-
-	require.NotEmpty(t, sessionToken, "should have session token")
-
+	sessionToken := setupSessionWithClaims(t, sessionMgr, "session", claims)
 	logOutput := makeRequestWithClaims(t, sessionMgr, sessionToken, claims)
 
-	// Should not contain user_id since it's uuid.Nil
 	assert.NotContains(t, logOutput, "user_id=")
 }
 
 func TestCorrelationAndAudit_SessionClaimsWrongType(t *testing.T) {
-	// When session returns wrong type, should not panic
 	sessionMgr := newTestSessionManager(t)
-
-	// First, make a request to set up the session with wrong type
-	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionMgr.Put(r.Context(), "session", "not-session-claims")
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
-	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
-	setupRec := httptest.NewRecorder()
-	wrappedSetup.ServeHTTP(setupRec, setupReq)
-
-	// Extract session token
-	cookies := setupRec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
-
-	require.NotEmpty(t, sessionToken, "should have session token")
-
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	sessionToken := setupSessionWithClaims(t, sessionMgr, "session", "not-session-claims")
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -450,13 +370,11 @@ func TestCorrelationAndAudit_SessionClaimsWrongType(t *testing.T) {
 		middleware.ServeHTTP(rec, req)
 	})
 
-	// Should not contain user_id or tenant_id since type assertion fails
 	assert.NotContains(t, logBuf.String(), "user_id=")
 	assert.NotContains(t, logBuf.String(), "tenant_id=")
 }
 
 func TestCorrelationAndAudit_DefaultSessionKey(t *testing.T) {
-	// Test that empty sessionKey falls back to auth.DefaultSessionKey
 	userID := uuid.New()
 	tenantID := uuid.New()
 	claims := auth.SessionClaims{
@@ -466,38 +384,13 @@ func TestCorrelationAndAudit_DefaultSessionKey(t *testing.T) {
 	}
 
 	sessionMgr := newTestSessionManager(t)
-
-	// Set up session with claims using the default key (auth.DefaultSessionKey = "auth")
-	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionMgr.Put(r.Context(), auth.DefaultSessionKey, claims)
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
-	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
-	setupRec := httptest.NewRecorder()
-	wrappedSetup.ServeHTTP(setupRec, setupReq)
-
-	cookies := setupRec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
-
-	require.NotEmpty(t, sessionToken, "should have session token")
-
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	sessionToken := setupSessionWithClaims(t, sessionMgr, auth.DefaultSessionKey, claims)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Pass empty string for sessionKey - should use DefaultSessionKey
 	middleware := sessionMgr.LoadAndSave(CorrelationAndAudit(sessionMgr, "")(handler))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -505,7 +398,6 @@ func TestCorrelationAndAudit_DefaultSessionKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Should find the claims at the default key
 	assert.Contains(t, logBuf.String(), "user_id="+userID.String())
 	assert.Contains(t, logBuf.String(), "tenant_id="+tenantID.String())
 }
@@ -518,32 +410,8 @@ func TestCorrelationAndAudit_CustomSessionKey(t *testing.T) {
 	}
 
 	sessionMgr := newTestSessionManager(t)
-
-	// Set up session with claims using a custom key
-	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionMgr.Put(r.Context(), "custom-key", claims)
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
-	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
-	setupRec := httptest.NewRecorder()
-	wrappedSetup.ServeHTTP(setupRec, setupReq)
-
-	cookies := setupRec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
-
-	require.NotEmpty(t, sessionToken, "should have session token")
-
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	sessionToken := setupSessionWithClaims(t, sessionMgr, "custom-key", claims)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -556,7 +424,6 @@ func TestCorrelationAndAudit_CustomSessionKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Should find the claims at the custom key
 	assert.Contains(t, logBuf.String(), "user_id="+userID.String())
 }
 
@@ -575,20 +442,15 @@ func TestCorrelationAndAudit_PassesContextToHandler(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Handler should receive context with request ID
 	id, found := RequestID(capturedCtx)
 	require.True(t, found, "handler context should have request ID")
 	assert.Equal(t, "test-id-123", id)
 }
 
 func TestCorrelationAndAudit_DefaultStatusOnNoWriteHeader(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
-	// Handler that doesn't call WriteHeader - should default to 200
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Just write body without explicit WriteHeader
 		_, _ = w.Write([]byte("hello"))
 	})
 
@@ -598,17 +460,13 @@ func TestCorrelationAndAudit_DefaultStatusOnNoWriteHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Should have logged status=200 (the default)
 	assert.Contains(t, logBuf.String(), "status=200")
 }
 
-// makeRequestWithClaims is a helper that makes a request with session claims already set
 func makeRequestWithClaims(t *testing.T, sessionMgr *session.Manager, sessionToken string, claims auth.SessionClaims) string {
 	t.Helper()
 
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -628,41 +486,33 @@ func TestStatusRecorder_WriteHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
 
-	// Initial status should be 200 (set in CorrelationAndAudit)
 	assert.Equal(t, http.StatusOK, sr.status)
 
-	// After WriteHeader, status should be updated
 	sr.WriteHeader(http.StatusNotFound)
 	assert.Equal(t, http.StatusNotFound, sr.status)
-	assert.Equal(t, http.StatusNotFound, rec.Code) // underlying recorder also gets the status
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestStatusRecorder_MultipleWriteHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
 
-	// First WriteHeader
 	sr.WriteHeader(http.StatusInternalServerError)
 	assert.Equal(t, http.StatusInternalServerError, sr.status)
 
-	// Second WriteHeader should also update (even though http.Server doesn't allow this)
 	sr.WriteHeader(http.StatusBadRequest)
 	assert.Equal(t, http.StatusBadRequest, sr.status)
 }
 
 func TestStatusRecorder_DefaultStatus(t *testing.T) {
-	// When a handler doesn't call WriteHeader, statusRecorder defaults to 200
 	rec := httptest.NewRecorder()
 	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
 
-	// Without calling WriteHeader, status remains the initial value
 	assert.Equal(t, http.StatusOK, sr.status)
 }
 
 func TestDurationLogged(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	slog.SetDefault(logger)
+	logBuf := setupTestLogger(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -674,18 +524,15 @@ func TestDurationLogged(t *testing.T) {
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
 
-	// Should contain duration_ms with a non-negative value
 	logOutput := logBuf.String()
 	assert.Contains(t, logOutput, "duration_ms=")
 
-	// Extract the duration value and verify it's a reasonable number
 	lines := strings.Split(logOutput, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "duration_ms=") {
 			parts := strings.Split(line, " ")
 			for _, part := range parts {
 				if strings.HasPrefix(part, "duration_ms=") {
-					// Extract the value - format is "duration_ms=0" or similar
 					assert.True(t, len(part) > len("duration_ms="), "duration_ms should have a value")
 				}
 			}
@@ -703,32 +550,9 @@ func TestCorrelationAndAudit_WithBothUserIDAndTenantID(t *testing.T) {
 	}
 
 	sessionMgr := newTestSessionManager(t)
-
-	// Set up session with claims
-	setUpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionMgr.Put(r.Context(), "session", claims)
-		w.WriteHeader(http.StatusOK)
-	})
-
-	wrappedSetup := sessionMgr.LoadAndSave(setUpHandler)
-	setupReq := httptest.NewRequest(http.MethodGet, "/setup", nil)
-	setupRec := httptest.NewRecorder()
-	wrappedSetup.ServeHTTP(setupRec, setupReq)
-
-	cookies := setupRec.Result().Cookies()
-	var sessionToken string
-	for _, c := range cookies {
-		if c.Name == "session" {
-			sessionToken = c.Value
-			break
-		}
-	}
-
-	require.NotEmpty(t, sessionToken, "should have session token")
-
+	sessionToken := setupSessionWithClaims(t, sessionMgr, "session", claims)
 	logOutput := makeRequestWithClaims(t, sessionMgr, sessionToken, claims)
 
-	// Should contain both user_id and tenant_id
 	assert.Contains(t, logOutput, "user_id="+userID.String())
 	assert.Contains(t, logOutput, "tenant_id="+tenantID.String())
 }
