@@ -2,6 +2,9 @@ package db_test
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"os"
 	"testing"
 	"testing/fstest"
 
@@ -9,9 +12,29 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kusold/gotchi/db"
+	"github.com/kusold/gotchi/internal/testutil"
 	"github.com/kusold/gotchi/migrations"
 	"github.com/kusold/gotchi/tenantctx"
 )
+
+var testDB *testutil.TestDB
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if !testing.Short() {
+		testDB = testutil.SetupTestDB(m)
+		if testDB == nil {
+			fmt.Println("Integration tests require a container runtime")
+			os.Exit(1)
+		}
+	}
+
+	code := m.Run()
+	if testDB != nil {
+		testDB.Close()
+	}
+	os.Exit(code)
+}
 
 func TestNewManager(t *testing.T) {
 	mgr := db.NewManager(db.Config{DatabaseURL: "postgres://user:pass@localhost:5432/testdb"})
@@ -65,7 +88,7 @@ func TestAdminContext_NilInput(t *testing.T) {
 	assert.Equal(t, tenantctx.SystemTenant, tenantID)
 }
 
-func TestAddMigrationSource_DefaultDir(t *testing.T) {
+func TestAddMigrationSource_NoPanic(t *testing.T) {
 	mgr := db.NewManager(db.Config{DatabaseURL: "postgres://localhost/test"})
 	mgr.AddMigrationSource(db.MigrationSource{
 		FS:  fstest.MapFS{},
@@ -109,7 +132,7 @@ func TestManager_Connect_WithSearchPath(t *testing.T) {
 	require.NoError(t, err)
 	_, err = adminConn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS test_search_schema")
 	require.NoError(t, err)
-	adminConn.Release()
+	t.Cleanup(func() { adminConn.Release() })
 
 	mgr := db.NewManager(db.Config{
 		DatabaseURL: testDB.DatabaseURL,
@@ -120,7 +143,7 @@ func TestManager_Connect_WithSearchPath(t *testing.T) {
 
 	conn, err := mgr.Pool().Acquire(ctx)
 	require.NoError(t, err)
-	defer conn.Release()
+	t.Cleanup(func() { conn.Release() })
 
 	var searchPath string
 	require.NoError(t, conn.QueryRow(ctx, "SELECT current_setting('search_path', false)").Scan(&searchPath))
