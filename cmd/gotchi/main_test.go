@@ -89,53 +89,49 @@ func TestRunInitDefaultOutputDir(t *testing.T) {
 	}
 }
 
-func TestRunInitMissingAppName(t *testing.T) {
-	err := runInit([]string{})
-	if err == nil {
-		t.Fatal("expected error for missing app name")
+func TestRunInitErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantErr   string
+	}{
+		{
+			name:    "missing app name",
+			args:    []string{},
+			wantErr: "usage:",
+		},
+		{
+			name:    "unknown flag",
+			args:    []string{"myapp", "--unknown"},
+			wantErr: "unknown init flag",
+		},
+		{
+			name:    "extra argument",
+			args:    []string{"myapp", "extra-arg"},
+			wantErr: "unexpected extra argument",
+		},
+		{
+			name:    "missing --module value",
+			args:    []string{"myapp", "--module"},
+			wantErr: "missing value for --module",
+		},
+		{
+			name:    "missing --output value",
+			args:    []string{"myapp", "--output"},
+			wantErr: "missing value for --output",
+		},
 	}
-	if !strings.Contains(err.Error(), "usage:") {
-		t.Errorf("expected usage error, got: %v", err)
-	}
-}
 
-func TestRunInitUnknownFlag(t *testing.T) {
-	err := runInit([]string{"myapp", "--unknown"})
-	if err == nil {
-		t.Fatal("expected error for unknown flag")
-	}
-	if !strings.Contains(err.Error(), "unknown init flag") {
-		t.Errorf("expected unknown flag error, got: %v", err)
-	}
-}
-
-func TestRunInitExtraArgument(t *testing.T) {
-	err := runInit([]string{"myapp", "extra-arg"})
-	if err == nil {
-		t.Fatal("expected error for extra argument")
-	}
-	if !strings.Contains(err.Error(), "unexpected extra argument") {
-		t.Errorf("expected extra argument error, got: %v", err)
-	}
-}
-
-func TestRunInitModuleFlagMissingValue(t *testing.T) {
-	err := runInit([]string{"myapp", "--module"})
-	if err == nil {
-		t.Fatal("expected error for missing --module value")
-	}
-	if !strings.Contains(err.Error(), "missing value for --module") {
-		t.Errorf("expected missing module value error, got: %v", err)
-	}
-}
-
-func TestRunInitOutputFlagMissingValue(t *testing.T) {
-	err := runInit([]string{"myapp", "--output"})
-	if err == nil {
-		t.Fatal("expected error for missing --output value")
-	}
-	if !strings.Contains(err.Error(), "missing value for --output") {
-		t.Errorf("expected missing output value error, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runInit(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
 	}
 }
 
