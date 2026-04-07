@@ -36,6 +36,20 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func connectManager(t *testing.T, sources ...db.MigrationSource) *db.Manager {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
+	for _, src := range sources {
+		mgr.AddMigrationSource(src)
+	}
+	require.NoError(t, mgr.Connect(context.Background()))
+	t.Cleanup(mgr.Close)
+	return mgr
+}
+
 func TestNewManager(t *testing.T) {
 	mgr := db.NewManager(db.Config{DatabaseURL: "postgres://user:pass@localhost:5432/testdb"})
 	require.NotNil(t, mgr)
@@ -101,23 +115,12 @@ func TestAddMigrationSource_NoPanic(t *testing.T) {
 }
 
 func TestManager_Connect_Success(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
+	mgr := connectManager(t)
 	assert.NotNil(t, mgr.Pool())
 }
 
 func TestManager_Connect_Idempotent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
+	mgr := connectManager(t)
 	require.NoError(t, mgr.Connect(context.Background()))
 	assert.NotNil(t, mgr.Pool())
 }
@@ -151,13 +154,7 @@ func TestManager_Connect_WithSearchPath(t *testing.T) {
 }
 
 func TestManager_Ping_Success(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
+	mgr := connectManager(t)
 	require.NoError(t, mgr.Ping(context.Background()))
 }
 
@@ -175,88 +172,42 @@ func TestManager_Close_DoubleClose(t *testing.T) {
 }
 
 func TestManager_RunMigrations_EmptySources(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
+	mgr := connectManager(t)
 	require.NoError(t, mgr.RunMigrations(context.Background()))
 }
 
 func TestManager_RunMigrations_SingleSource(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	mgr.AddMigrationSource(db.MigrationSource{
+	mgr := connectManager(t, db.MigrationSource{
 		FS:  migrations.Core(),
 		Dir: ".",
 	})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
 	require.NoError(t, mgr.RunMigrations(context.Background()))
 }
 
 func TestManager_RunMigrations_MultipleSources(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  migrations.Core(),
-		Dir: ".",
-	})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  migrations.Auth(),
-		Dir: ".",
-	})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
+	mgr := connectManager(t,
+		db.MigrationSource{FS: migrations.Core(), Dir: "."},
+		db.MigrationSource{FS: migrations.Auth(), Dir: "."},
+	)
 	require.NoError(t, mgr.RunMigrations(context.Background()))
 }
 
 func TestManager_RunMigrations_Idempotent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  migrations.Core(),
-		Dir: ".",
-	})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  migrations.Auth(),
-		Dir: ".",
-	})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
+	mgr := connectManager(t,
+		db.MigrationSource{FS: migrations.Core(), Dir: "."},
+		db.MigrationSource{FS: migrations.Auth(), Dir: "."},
+	)
 	require.NoError(t, mgr.RunMigrations(context.Background()))
 	require.NoError(t, mgr.RunMigrations(context.Background()))
 }
 
 func TestManager_RunMigrations_FailedMigration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-	badMigrationFS := fstest.MapFS{
+	badFS := fstest.MapFS{
 		"20990101000000_bad.sql": &fstest.MapFile{
 			Data: []byte("-- +goose Up\nSELECT * FROM nonexistent_table_xyz;\n\n-- +goose Down\nSELECT 1;"),
 		},
 	}
-
-	mgr := db.NewManager(db.Config{DatabaseURL: testDB.DatabaseURL})
-	mgr.AddMigrationSource(db.MigrationSource{
-		FS:  badMigrationFS,
-		Dir: ".",
-	})
-	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
-
+	mgr := connectManager(t, db.MigrationSource{FS: badFS, Dir: "."})
 	err := mgr.RunMigrations(context.Background())
 	require.Error(t, err, "migration with invalid SQL should fail")
 }
