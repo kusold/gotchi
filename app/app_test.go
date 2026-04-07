@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/kusold/gotchi/auth"
-	"github.com/kusold/gotchi/db"
 )
 
 func TestNewRequiresDatabaseURL(t *testing.T) {
@@ -15,21 +14,16 @@ func TestNewRequiresDatabaseURL(t *testing.T) {
 }
 
 func TestNewRequiresOIDCFieldsWhenEnabled(t *testing.T) {
-	_, err := New(Config{
-		Server:   ServerConfig{Port: "3000"},
-		Database: db.Config{DatabaseURL: "postgres://example"},
-		Auth:     AuthConfig{OIDC: auth.Config{Enabled: true}},
-	})
+	cfg := testConfig()
+	cfg.Auth = AuthConfig{OIDC: auth.Config{Enabled: true}}
+	_, err := New(cfg)
 	if err == nil {
 		t.Fatalf("expected error for missing OIDC fields")
 	}
 }
 
 func TestNewSuccess(t *testing.T) {
-	app, err := New(Config{
-		Server:   ServerConfig{Port: "3000"},
-		Database: db.Config{DatabaseURL: "postgres://example"},
-	})
+	app, err := New(testConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,25 +36,27 @@ func TestNewSuccess(t *testing.T) {
 }
 
 func TestNewRespectsDatabaseTracingSetting(t *testing.T) {
-	withTracing, err := New(Config{
-		Server:   ServerConfig{Port: "3000"},
-		Database: db.Config{DatabaseURL: "postgres://example", EnableTracing: true},
+	t.Run("tracing enabled", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.Database.EnableTracing = true
+		withTracing, err := New(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error with tracing enabled: %v", err)
+		}
+		if !withTracing.cfg.Database.EnableTracing {
+			t.Fatalf("expected database tracing to remain enabled")
+		}
 	})
-	if err != nil {
-		t.Fatalf("unexpected error with tracing enabled: %v", err)
-	}
-	if !withTracing.cfg.Database.EnableTracing {
-		t.Fatalf("expected database tracing to remain enabled")
-	}
 
-	withoutTracing, err := New(Config{
-		Server:   ServerConfig{Port: "3000"},
-		Database: db.Config{DatabaseURL: "postgres://example", EnableTracing: false},
+	t.Run("tracing disabled", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.Database.EnableTracing = false
+		withoutTracing, err := New(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error with tracing disabled: %v", err)
+		}
+		if withoutTracing.cfg.Database.EnableTracing {
+			t.Fatalf("expected database tracing to remain disabled")
+		}
 	})
-	if err != nil {
-		t.Fatalf("unexpected error with tracing disabled: %v", err)
-	}
-	if withoutTracing.cfg.Database.EnableTracing {
-		t.Fatalf("expected database tracing to remain disabled")
-	}
 }

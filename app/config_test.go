@@ -23,21 +23,16 @@ func TestConfigWithDefaults(t *testing.T) {
 	})
 
 	t.Run("preserves provided port", func(t *testing.T) {
-		cfg := Config{
-			Server:   ServerConfig{Port: "8080"},
-			Database: db.Config{DatabaseURL: "postgres://example"},
-		}
+		cfg := testConfig()
+		cfg.Server.Port = "8080"
 		withDefaults := cfg.withDefaults()
 		assert.Equal(t, "8080", withDefaults.Server.Port)
 	})
 
 	t.Run("sets default OIDC config when enabled", func(t *testing.T) {
-		cfg := Config{
-			Database: db.Config{DatabaseURL: "postgres://example"},
-			Auth:     AuthConfig{OIDC: auth.Config{Enabled: true}},
-		}
+		cfg := testConfig()
+		cfg.Auth = AuthConfig{OIDC: auth.Config{Enabled: true}}
 		withDefaults := cfg.withDefaults()
-		// WithDefaults should be called on the OIDC config
 		assert.True(t, withDefaults.Auth.OIDC.Enabled)
 	})
 
@@ -52,20 +47,17 @@ func TestConfigWithDefaults(t *testing.T) {
 
 	t.Run("preserves provided migration sources", func(t *testing.T) {
 		sources := []db.MigrationSource{{FS: fstest.MapFS{}, Dir: "migrations"}}
-		cfg := Config{
-			Database:   db.Config{DatabaseURL: "postgres://example"},
-			Migrations: MigrationConfig{Sources: sources},
-		}
+		cfg := testConfig()
+		cfg.Migrations = MigrationConfig{Sources: sources}
 		withDefaults := cfg.withDefaults()
 		assert.Equal(t, sources, withDefaults.Migrations.Sources)
 	})
 
 	t.Run("preserves all provided values", func(t *testing.T) {
-		cfg := Config{
-			Server:     ServerConfig{Port: "9000"},
-			Database:   db.Config{DatabaseURL: "postgres://example", EnableTracing: true},
-			Migrations: MigrationConfig{EnableCore: true, EnableAuth: true},
-		}
+		cfg := testConfig()
+		cfg.Server.Port = "9000"
+		cfg.Database.EnableTracing = true
+		cfg.Migrations = MigrationConfig{EnableCore: true, EnableAuth: true}
 		withDefaults := cfg.withDefaults()
 		assert.Equal(t, "9000", withDefaults.Server.Port)
 		assert.Equal(t, "postgres://example", withDefaults.Database.DatabaseURL)
@@ -90,83 +82,41 @@ func TestConfigValidate(t *testing.T) {
 		assert.Contains(t, err.Error(), "server port is required")
 	})
 
-	t.Run("returns error when OIDC enabled but issuer URL missing", func(t *testing.T) {
-		cfg := Config{
-			Server:   ServerConfig{Port: "3000"},
-			Database: db.Config{DatabaseURL: "postgres://example"},
-			Auth: AuthConfig{
-				OIDC: auth.Config{
-					Enabled:     true,
-					ClientID:    "client",
-					ClientSecret: "secret",
-					RedirectURL: "http://localhost/callback",
-				},
+	t.Run("returns error when OIDC enabled with missing fields", func(t *testing.T) {
+		tests := []struct {
+			name string
+			oidc auth.Config
+		}{
+			{
+				"missing issuer URL",
+				auth.Config{Enabled: true, ClientID: "client", ClientSecret: "secret", RedirectURL: "http://localhost/callback"},
+			},
+			{
+				"missing client ID",
+				auth.Config{Enabled: true, IssuerURL: "http://issuer", ClientSecret: "secret", RedirectURL: "http://localhost/callback"},
+			},
+			{
+				"missing client secret",
+				auth.Config{Enabled: true, IssuerURL: "http://issuer", ClientID: "client", RedirectURL: "http://localhost/callback"},
+			},
+			{
+				"missing redirect URL",
+				auth.Config{Enabled: true, IssuerURL: "http://issuer", ClientID: "client", ClientSecret: "secret"},
 			},
 		}
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "OIDC issuer/client credentials/redirect URL are required")
-	})
-
-	t.Run("returns error when OIDC enabled but client ID missing", func(t *testing.T) {
-		cfg := Config{
-			Server:   ServerConfig{Port: "3000"},
-			Database: db.Config{DatabaseURL: "postgres://example"},
-			Auth: AuthConfig{
-				OIDC: auth.Config{
-					Enabled:      true,
-					IssuerURL:    "http://issuer",
-					ClientSecret: "secret",
-					RedirectURL:  "http://localhost/callback",
-				},
-			},
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				cfg := testConfig()
+				cfg.Auth = AuthConfig{OIDC: tt.oidc}
+				err := cfg.validate()
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "OIDC issuer/client credentials/redirect URL are required")
+			})
 		}
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "OIDC issuer/client credentials/redirect URL are required")
-	})
-
-	t.Run("returns error when OIDC enabled but client secret missing", func(t *testing.T) {
-		cfg := Config{
-			Server:   ServerConfig{Port: "3000"},
-			Database: db.Config{DatabaseURL: "postgres://example"},
-			Auth: AuthConfig{
-				OIDC: auth.Config{
-					Enabled:     true,
-					IssuerURL:   "http://issuer",
-					ClientID:    "client",
-					RedirectURL: "http://localhost/callback",
-				},
-			},
-		}
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "OIDC issuer/client credentials/redirect URL are required")
-	})
-
-	t.Run("returns error when OIDC enabled but redirect URL missing", func(t *testing.T) {
-		cfg := Config{
-			Server:   ServerConfig{Port: "3000"},
-			Database: db.Config{DatabaseURL: "postgres://example"},
-			Auth: AuthConfig{
-				OIDC: auth.Config{
-					Enabled:      true,
-					IssuerURL:    "http://issuer",
-					ClientID:     "client",
-					ClientSecret: "secret",
-				},
-			},
-		}
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "OIDC issuer/client credentials/redirect URL are required")
 	})
 
 	t.Run("succeeds with valid config without OIDC", func(t *testing.T) {
-		cfg := Config{
-			Server:   ServerConfig{Port: "3000"},
-			Database: db.Config{DatabaseURL: "postgres://example"},
-		}
+		cfg := testConfig()
 		err := cfg.validate()
 		assert.NoError(t, err)
 	})
@@ -175,9 +125,7 @@ func TestConfigValidate(t *testing.T) {
 func TestDefaultLoginHandler(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
 	w := httptest.NewRecorder()
-
 	defaultLoginHandler(w, req)
-
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "text/plain; charset=utf-8", w.Header().Get("Content-Type"))
 	assert.Equal(t, "login endpoint", w.Body.String())
@@ -190,11 +138,9 @@ func TestModuleFunc(t *testing.T) {
 			called = true
 			return nil
 		})
-
 		err := moduleFunc.Register(nil, Dependencies{})
-
 		assert.NoError(t, err)
-		assert.True(t, called, "ModuleFunc should call the underlying function")
+		assert.True(t, called)
 	})
 
 	t.Run("Register returns error from underlying function", func(t *testing.T) {
@@ -202,9 +148,7 @@ func TestModuleFunc(t *testing.T) {
 		moduleFunc := ModuleFunc(func(r chi.Router, deps Dependencies) error {
 			return expectedErr
 		})
-
 		err := moduleFunc.Register(nil, Dependencies{})
-
 		assert.Equal(t, expectedErr, err)
 	})
 }
