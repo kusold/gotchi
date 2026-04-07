@@ -2,8 +2,11 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +14,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func newTestManager(t *testing.T) *Manager {
+	t.Helper()
+	return NewMemory(Config{})
+}
+
+func newTestRequest(t *testing.T, method, path string) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	return httptest.NewRequest(method, path, nil), httptest.NewRecorder()
+}
 
 func TestConfigWithDefaults(t *testing.T) {
 	t.Parallel()
@@ -75,6 +88,19 @@ func TestConfigWithDefaults(t *testing.T) {
 
 		_ = result
 	})
+
+	t.Run("negative durations are corrected to defaults", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := Config{
+			ExpiryInterval: -5 * time.Minute,
+			Lifetime:       -1 * time.Hour,
+		}
+		result := cfg.withDefaults()
+
+		assert.Equal(t, 5*time.Minute, result.ExpiryInterval, "negative ExpiryInterval should default")
+		assert.Equal(t, 24*time.Hour, result.Lifetime, "negative Lifetime should default")
+	})
 }
 
 func TestRegisterGobTypes(t *testing.T) {
@@ -85,7 +111,6 @@ func TestRegisterGobTypes(t *testing.T) {
 			Name string
 		}
 
-		// This should not panic
 		RegisterGobTypes(customStruct{})
 	})
 
@@ -94,7 +119,6 @@ func TestRegisterGobTypes(t *testing.T) {
 		type type2 struct{ B string }
 		type type3 struct{ C bool }
 
-		// This should not panic
 		RegisterGobTypes(type1{}, type2{}, type3{})
 	})
 }
@@ -127,7 +151,7 @@ func TestNew(t *testing.T) {
 	t.Run("applies defaults to config", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := Config{} // All zeros
+		cfg := Config{}
 		store := memstore.New()
 
 		mgr := New(cfg, store)
@@ -163,8 +187,7 @@ func TestNewMemory(t *testing.T) {
 	t.Run("applies defaults", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := Config{}
-		mgr := NewMemory(cfg)
+		mgr := NewMemory(Config{})
 		require.NotNil(t, mgr)
 
 		inner := mgr.Inner()
@@ -179,34 +202,27 @@ func TestManagerLoadAndSave(t *testing.T) {
 	t.Run("middleware persists session data across requests", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
-		// Handler that stores a value in session
 		storeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mgr.Put(r.Context(), "user_id", "12345")
 			w.WriteHeader(http.StatusOK)
 		})
 
-		// Handler that retrieves the value from session
 		var retrievedValue any
 		retrieveHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			retrievedValue = mgr.Get(r.Context(), "user_id")
 			w.WriteHeader(http.StatusOK)
 		})
 
-		// First request: store value
-		req1 := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec1 := httptest.NewRecorder()
+		req1, rec1 := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(storeHandler).ServeHTTP(rec1, req1)
 
-		// Get the session cookie from first response
 		cookies := rec1.Result().Cookies()
 		require.Len(t, cookies, 1, "Should have one session cookie")
 
-		// Second request: retrieve value using the session cookie
-		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req2, rec2 := newTestRequest(t, http.MethodGet, "/")
 		req2.AddCookie(cookies[0])
-		rec2 := httptest.NewRecorder()
 		mgr.LoadAndSave(retrieveHandler).ServeHTTP(rec2, req2)
 
 		assert.Equal(t, "12345", retrievedValue, "Session data should persist across requests")
@@ -215,7 +231,7 @@ func TestManagerLoadAndSave(t *testing.T) {
 	t.Run("wraps handler correctly", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 		handlerCalled := false
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -223,8 +239,7 @@ func TestManagerLoadAndSave(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 
 		assert.True(t, handlerCalled, "Handler should be called")
@@ -238,104 +253,116 @@ func TestManagerGetAndPut(t *testing.T) {
 	t.Run("Put and Get work with context", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
-		// Use LoadAndSave middleware to set up context
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-
-			// Put a value
 			mgr.Put(ctx, "key1", "value1")
-
-			// Get the value
 			val := mgr.Get(ctx, "key1")
 			assert.Equal(t, "value1", val)
-
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 	})
 
 	t.Run("GetString returns string value", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-
 			mgr.Put(ctx, "username", "john_doe")
 			val := mgr.GetString(ctx, "username")
 			assert.Equal(t, "john_doe", val)
-
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 	})
 
 	t.Run("GetString returns empty string for non-existent key", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := r.Context()
-
-			val := mgr.GetString(ctx, "nonexistent")
+			val := mgr.GetString(r.Context(), "nonexistent")
 			assert.Equal(t, "", val)
-
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 	})
 
 	t.Run("Get returns nil for non-existent key", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := r.Context()
-
-			val := mgr.Get(ctx, "nonexistent")
+			val := mgr.Get(r.Context(), "nonexistent")
 			assert.Nil(t, val)
-
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 	})
 
 	t.Run("Put overwrites existing value", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-
 			mgr.Put(ctx, "counter", 1)
 			mgr.Put(ctx, "counter", 2)
-
-			val := mgr.Get(ctx, "counter")
-			assert.Equal(t, 2, val)
-
+			assert.Equal(t, 2, mgr.Get(ctx, "counter"))
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
+		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
+	})
+
+	t.Run("empty string key works for Put and Get", func(t *testing.T) {
+		t.Parallel()
+
+		mgr := newTestManager(t)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			mgr.Put(ctx, "", "empty_key_value")
+			val := mgr.Get(ctx, "")
+			assert.Equal(t, "empty_key_value", val)
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, rec := newTestRequest(t, http.MethodGet, "/")
+		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
+	})
+
+	t.Run("large session value is stored and retrieved", func(t *testing.T) {
+		t.Parallel()
+
+		mgr := newTestManager(t)
+		largeValue := strings.Repeat("x", 100_000)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			mgr.Put(ctx, "large", largeValue)
+			val := mgr.GetString(ctx, "large")
+			assert.Equal(t, largeValue, val)
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 	})
 }
@@ -346,21 +373,16 @@ func TestManagerPutHTTP(t *testing.T) {
 	t.Run("PutHTTP uses request context", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// PutHTTP uses r.Context() internally
 			mgr.PutHTTP(r, "data", "test_value")
-
-			// Verify it's accessible via Get with context
 			val := mgr.Get(r.Context(), "data")
 			assert.Equal(t, "test_value", val)
-
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 	})
 }
@@ -371,33 +393,53 @@ func TestManagerLoad(t *testing.T) {
 	t.Run("Load creates context from token", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
-		// First, create a session - token will be in the response cookie
 		storeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mgr.Put(r.Context(), "test_key", "test_value")
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req1 := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec1 := httptest.NewRecorder()
+		req1, rec1 := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(storeHandler).ServeHTTP(rec1, req1)
 
-		// Get the session token from the cookie
 		cookies := rec1.Result().Cookies()
 		require.Len(t, cookies, 1, "Should have one session cookie")
 		sessionToken := cookies[0].Value
 		require.NotEmpty(t, sessionToken, "Session token should be generated")
 
-		// Now test Load with the token directly
 		ctx := context.Background()
 		loadedCtx, err := mgr.Load(ctx, sessionToken)
 		require.NoError(t, err, "Load should not error")
 		require.NotNil(t, loadedCtx, "Loaded context should not be nil")
 
-		// Verify we can get the value from the loaded context
 		val := mgr.Get(loadedCtx, "test_key")
 		assert.Equal(t, "test_value", val, "Value should be accessible from loaded context")
+	})
+
+	t.Run("Load with invalid token returns usable context", func(t *testing.T) {
+		t.Parallel()
+
+		mgr := newTestManager(t)
+
+		ctx := context.Background()
+		loadedCtx, err := mgr.Load(ctx, "invalid-token-that-does-not-exist")
+		require.NoError(t, err, "Load with invalid token should not error")
+		require.NotNil(t, loadedCtx, "Context should still be returned")
+
+		val := mgr.Get(loadedCtx, "any_key")
+		assert.Nil(t, val, "Get on invalid token context should return nil")
+	})
+
+	t.Run("Load with empty token returns usable context", func(t *testing.T) {
+		t.Parallel()
+
+		mgr := newTestManager(t)
+
+		ctx := context.Background()
+		loadedCtx, err := mgr.Load(ctx, "")
+		require.NoError(t, err, "Load with empty token should not error")
+		require.NotNil(t, loadedCtx)
 	})
 }
 
@@ -407,39 +449,47 @@ func TestManagerDestroy(t *testing.T) {
 	t.Run("Destroy removes session data", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		var sessionToken string
 		var destroyErr error
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-
-			// Store a value
 			mgr.Put(ctx, "to_delete", "value")
-
-			// Get token before destroy
 			sessionToken = mgr.Inner().Token(ctx)
-
-			// Destroy the session
 			destroyErr = mgr.Destroy(ctx)
-
 			w.WriteHeader(http.StatusOK)
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		rec := httptest.NewRecorder()
+		req, rec := newTestRequest(t, http.MethodGet, "/")
 		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
 
 		assert.NoError(t, destroyErr, "Destroy should not error")
 
-		// Load the destroyed session - data should be gone
 		ctx := context.Background()
 		loadedCtx, err := mgr.Load(ctx, sessionToken)
 		require.NoError(t, err)
 
 		val := mgr.Get(loadedCtx, "to_delete")
 		assert.Nil(t, val, "Data should be nil after destroy")
+	})
+
+	t.Run("Destroy on non-existent session does not error", func(t *testing.T) {
+		t.Parallel()
+
+		mgr := newTestManager(t)
+
+		var destroyErr error
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			destroyErr = mgr.Destroy(r.Context())
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, rec := newTestRequest(t, http.MethodGet, "/")
+		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
+
+		assert.NoError(t, destroyErr, "Destroy on fresh session should not error")
 	})
 }
 
@@ -463,11 +513,132 @@ func TestManagerInner(t *testing.T) {
 	t.Run("returns same instance on multiple calls", func(t *testing.T) {
 		t.Parallel()
 
-		mgr := NewMemory(Config{})
+		mgr := newTestManager(t)
 
 		inner1 := mgr.Inner()
 		inner2 := mgr.Inner()
 
 		assert.Same(t, inner1, inner2, "Inner should return same instance")
 	})
+}
+
+func TestManagerConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	t.Run("concurrent Put operations do not race", func(t *testing.T) {
+		mgr := newTestManager(t)
+
+		const goroutines = 20
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var wg sync.WaitGroup
+			for i := range goroutines {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					mgr.Put(r.Context(), fmt.Sprintf("key-%d", idx), idx)
+				}(i)
+			}
+			wg.Wait()
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, rec := newTestRequest(t, http.MethodGet, "/")
+		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("concurrent Get operations do not race", func(t *testing.T) {
+		mgr := newTestManager(t)
+
+		const goroutines = 20
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			for i := range goroutines {
+				mgr.Put(ctx, fmt.Sprintf("key-%d", i), i)
+			}
+
+			var wg sync.WaitGroup
+			for i := range goroutines {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					val := mgr.Get(ctx, fmt.Sprintf("key-%d", idx))
+					assert.Equal(t, idx, val)
+				}(i)
+			}
+			wg.Wait()
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, rec := newTestRequest(t, http.MethodGet, "/")
+		mgr.LoadAndSave(handler).ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
+func TestManagerSessionExpiry(t *testing.T) {
+	mgr := NewMemory(Config{
+		Lifetime: 50 * time.Millisecond,
+	})
+
+	storeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mgr.Put(r.Context(), "ephemeral", "gone_soon")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req1, rec1 := newTestRequest(t, http.MethodGet, "/")
+	mgr.LoadAndSave(storeHandler).ServeHTTP(rec1, req1)
+
+	cookies := rec1.Result().Cookies()
+	require.Len(t, cookies, 1)
+
+	time.Sleep(100 * time.Millisecond)
+
+	var retrievedValue any
+	retrieveHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		retrievedValue = mgr.Get(r.Context(), "ephemeral")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req2, rec2 := newTestRequest(t, http.MethodGet, "/")
+	req2.AddCookie(cookies[0])
+	mgr.LoadAndSave(retrieveHandler).ServeHTTP(rec2, req2)
+
+	assert.Nil(t, retrievedValue, "Session data should be expired")
+}
+
+func TestManagerMultipleConcurrentSessions(t *testing.T) {
+	mgr := newTestManager(t)
+
+	storeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("user")
+		mgr.Put(r.Context(), "user_id", userID)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cookies := make([]*http.Cookie, 5)
+	for i := range cookies {
+		req, rec := newTestRequest(t, http.MethodGet, fmt.Sprintf("/?user=user%d", i))
+		mgr.LoadAndSave(storeHandler).ServeHTTP(rec, req)
+		result := rec.Result()
+		cs := result.Cookies()
+		require.Len(t, cs, 1, "Each request should get its own session cookie")
+		cookies[i] = cs[0]
+	}
+
+	for i, cookie := range cookies {
+		var retrievedValue any
+		retrieveHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			retrievedValue = mgr.Get(r.Context(), "user_id")
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, rec := newTestRequest(t, http.MethodGet, "/")
+		req.AddCookie(cookie)
+		mgr.LoadAndSave(retrieveHandler).ServeHTTP(rec, req)
+
+		assert.Equal(t, fmt.Sprintf("user%d", i), retrievedValue, "Each session should have its own data")
+	}
 }
