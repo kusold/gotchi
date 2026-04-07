@@ -2,9 +2,7 @@ package db_test
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,30 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kusold/gotchi/db"
-	"github.com/kusold/gotchi/internal/testutil"
 	"github.com/kusold/gotchi/tenantctx"
 )
 
 const tenantSettingSQL = "SELECT COALESCE(current_setting('app.current_tenant', true), '')"
-
-var testDB *testutil.TestDB
-
-func TestMain(m *testing.M) {
-	flag.Parse()
-	if testing.Short() {
-		os.Exit(m.Run())
-	}
-
-	testDB = testutil.SetupTestDB(m)
-	if testDB == nil {
-		fmt.Println("Failed to setup test database")
-		os.Exit(1)
-	}
-
-	code := m.Run()
-	testDB.Close()
-	os.Exit(code)
-}
 
 func newManagedPool(t *testing.T) *db.Manager {
 	t.Helper()
