@@ -8,18 +8,18 @@ import (
 //go:embed core/*.sql auth/*.sql
 var migrationFS embed.FS
 
-func Core() fs.FS {
-	sub, err := fs.Sub(migrationFS, "core")
+func subFS(dir string) fs.FS {
+	sub, err := fs.Sub(migrationFS, dir)
 	if err != nil {
 		panic(err)
 	}
 	return sub
 }
 
+func Core() fs.FS {
+	return subFS("core")
+}
+
 func Auth() fs.FS {
-	sub, err := fs.Sub(migrationFS, "auth")
-	if err != nil {
-		panic(err)
-	}
-	return sub
+	return subFS("auth")
 }
