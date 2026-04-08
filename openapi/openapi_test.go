@@ -509,31 +509,36 @@ paths:
 	}
 }
 
-func TestReadRequestBodyWithNilBody(t *testing.T) {
-	data, err := readRequestBody(nil, 1024)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestReadRequestBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     io.ReadCloser
+		limit    int64
+		wantData string
+		wantErr  error
+	}{
+		{"nil body", nil, 1024, "", nil},
+		{"exact limit", io.NopCloser(strings.NewReader("hello")), 5, "hello", nil},
+		{"exceeds limit", io.NopCloser(strings.NewReader("hello world")), 5, "", errRequestBodyTooLarge},
 	}
-	if data != nil {
-		t.Fatalf("expected nil data, got: %v", data)
-	}
-}
 
-func TestReadRequestBodyWithExactLimit(t *testing.T) {
-	body := io.NopCloser(strings.NewReader("hello"))
-	data, err := readRequestBody(body, 5)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("unexpected data: got=%q want=%q", string(data), "hello")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := readRequestBody(tt.body, tt.limit)
 
-func TestReadRequestBodyExceedsLimit(t *testing.T) {
-	body := io.NopCloser(strings.NewReader("hello world"))
-	_, err := readRequestBody(body, 5)
-	if err != errRequestBodyTooLarge {
-		t.Fatalf("unexpected error: got=%v want=%v", err, errRequestBodyTooLarge)
+			if err != tt.wantErr {
+				t.Fatalf("unexpected error: got=%v want=%v", err, tt.wantErr)
+			}
+
+			if tt.wantErr == nil {
+				if tt.body == nil {
+					if data != nil {
+						t.Fatalf("expected nil data, got: %v", data)
+					}
+				} else if string(data) != tt.wantData {
+					t.Fatalf("unexpected data: got=%q want=%q", string(data), tt.wantData)
+				}
+			}
+		})
 	}
 }
