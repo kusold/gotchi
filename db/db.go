@@ -20,10 +20,10 @@ import (
 )
 
 type Config struct {
-	DatabaseURL   string
-	SearchPath    string // Optional: set search_path for all connections (used by migration-regression)
-	EnableTracing bool
-	OTELTracing   bool
+	DatabaseURL       string
+	SearchPath        string // Optional: set search_path for all connections (used by migration-regression)
+	EnableSlogTracing bool
+	OTELTracing       bool
 }
 
 type MigrationSource struct {
@@ -58,7 +58,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 		return err
 	}
 
-	if m.cfg.EnableTracing || m.cfg.OTELTracing {
+	if m.cfg.EnableSlogTracing || m.cfg.OTELTracing {
 		parsedCfg = setupTracing(parsedCfg, m.cfg)
 	}
 	if m.cfg.SearchPath != "" {
@@ -75,10 +75,11 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return m.Ping(AdminContext(ctx))
 }
 
-func (m *Manager) Close() {
+func (m *Manager) Close() error {
 	if m.pool != nil {
 		m.pool.Close()
 	}
+	return nil
 }
 
 func (m *Manager) Ping(ctx context.Context) error {
@@ -173,7 +174,7 @@ func isUndefinedFunctionError(err error) bool {
 func setupTracing(cfg *pgxpool.Config, dbCfg Config) *pgxpool.Config {
 	var tracers []pgx.QueryTracer
 
-	if dbCfg.EnableTracing {
+	if dbCfg.EnableSlogTracing {
 		logger := pgxslog.NewLogger(slog.Default())
 		tracers = append(tracers, &tracelog.TraceLog{
 			Logger:   logger,

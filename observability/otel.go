@@ -26,8 +26,11 @@ type OTELConfig struct {
 	Enabled     bool
 	ServiceName string
 	ExporterURL string
-	SampleRate  float64
-	Insecure    bool
+	// SampleRate controls the trace sampling ratio (0.0–1.0).
+	// The zero-value defaults to 1.0 (full sampling). To disable
+	// sampling entirely, set OTELConfig.Enabled = false instead.
+	SampleRate float64
+	Insecure   bool
 }
 
 func (c OTELConfig) WithDefaults() OTELConfig {
@@ -56,7 +59,10 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 		return nil, fmt.Errorf("creating OTEL resource: %w", err)
 	}
 
-	traceOpts := grpcTraceOpts(cfg)
+	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.ExporterURL)}
+	if cfg.Insecure {
+		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+	}
 	traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP trace exporter: %w", err)
@@ -69,7 +75,10 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 	)
 	otel.SetTracerProvider(tp)
 
-	metricOpts := grpcMetricOpts(cfg)
+	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.ExporterURL)}
+	if cfg.Insecure {
+		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+	}
 	metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP metric exporter: %w", err)
@@ -129,7 +138,7 @@ func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
 			)
 			defer span.End()
 
-			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			rw := getStatusRecorder(w)
 			start := time.Now()
 			r = r.WithContext(ctx)
 
@@ -152,18 +161,9 @@ func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
 	}
 }
 
-func grpcTraceOpts(cfg OTELConfig) []otlptracegrpc.Option {
-	opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.ExporterURL)}
-	if cfg.Insecure {
-		opts = append(opts, otlptracegrpc.WithInsecure())
+func getStatusRecorder(w http.ResponseWriter) *statusRecorder {
+	if existing, ok := w.(*statusRecorder); ok {
+		return existing
 	}
-	return opts
-}
-
-func grpcMetricOpts(cfg OTELConfig) []otlpmetricgrpc.Option {
-	opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.ExporterURL)}
-	if cfg.Insecure {
-		opts = append(opts, otlpmetricgrpc.WithInsecure())
-	}
-	return opts
+	return &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 }

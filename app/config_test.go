@@ -56,12 +56,12 @@ func TestConfigWithDefaults(t *testing.T) {
 	t.Run("preserves all provided values", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.Server.Port = "9000"
-		cfg.Database.EnableTracing = true
+		cfg.Database.EnableSlogTracing = true
 		cfg.Migrations = MigrationConfig{EnableCore: true, EnableAuth: true}
 		withDefaults := cfg.withDefaults()
 		assert.Equal(t, "9000", withDefaults.Server.Port)
 		assert.Equal(t, "postgres://example", withDefaults.Database.DatabaseURL)
-		assert.True(t, withDefaults.Database.EnableTracing)
+		assert.True(t, withDefaults.Database.EnableSlogTracing)
 		assert.True(t, withDefaults.Migrations.EnableCore)
 		assert.True(t, withDefaults.Migrations.EnableAuth)
 	})

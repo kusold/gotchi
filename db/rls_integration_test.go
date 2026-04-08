@@ -23,7 +23,7 @@ func newManagedPool(t *testing.T) *db.Manager {
 		DatabaseURL: testDB.DatabaseURL,
 	})
 	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
+	t.Cleanup(func() { _ = mgr.Close() })
 	return mgr
 }
 
@@ -260,7 +260,7 @@ func setupRLSTable(t *testing.T) *db.Manager {
 	require.NoError(t, mgr.Connect(context.Background()))
 
 	t.Cleanup(func() {
-		mgr.Close()
+		_ = mgr.Close()
 		_, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS rls_test_items`)
 	})
 
@@ -404,7 +404,7 @@ func TestBeforeAcquire_GracefulDegradation_MissingFunction(t *testing.T) {
 		SearchPath:  "no_rls_schema,public",
 	})
 	require.NoError(t, mgr.Connect(ctx))
-	t.Cleanup(mgr.Close)
+	t.Cleanup(func() { _ = mgr.Close() })
 
 	// Acquiring with a tenant context should not fail — the undefined_function
 	// error from calling set_tenant() is tolerated

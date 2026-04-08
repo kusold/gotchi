@@ -38,24 +38,24 @@ func TestNewSuccess(t *testing.T) {
 func TestNewRespectsDatabaseTracingSetting(t *testing.T) {
 	t.Run("tracing enabled", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.Database.EnableTracing = true
+		cfg.Database.EnableSlogTracing = true
 		withTracing, err := New(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error with tracing enabled: %v", err)
 		}
-		if !withTracing.cfg.Database.EnableTracing {
+		if !withTracing.cfg.Database.EnableSlogTracing {
 			t.Fatalf("expected database tracing to remain enabled")
 		}
 	})
 
 	t.Run("tracing disabled", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.Database.EnableTracing = false
+		cfg.Database.EnableSlogTracing = false
 		withoutTracing, err := New(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error with tracing disabled: %v", err)
 		}
-		if withoutTracing.cfg.Database.EnableTracing {
+		if withoutTracing.cfg.Database.EnableSlogTracing {
 			t.Fatalf("expected database tracing to remain disabled")
 		}
 	})

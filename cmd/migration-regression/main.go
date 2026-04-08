@@ -64,7 +64,7 @@ func main() {
 	if err := manager.Connect(ctx); err != nil {
 		log.Fatalf("connect failed: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	defer dropSchema(adminCtx, manager.Pool(), targetSchema)
 
