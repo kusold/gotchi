@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -147,8 +146,7 @@ func (a *Application) Run(ctx context.Context) error {
 	a.router.Use(chiMiddleware.Recoverer)
 
 	if a.cfg.OTEL.Enabled {
-		a.router.Use(observability.TracingMiddleware(a.cfg.OTEL.ServiceName))
-		a.router.Use(observability.HTTPMetricsMiddleware(a.cfg.OTEL.ServiceName))
+		a.router.Use(observability.OTELMiddleware(a.cfg.OTEL.ServiceName))
 	}
 
 	a.router.Use(sessionManager.LoadAndSave)
@@ -179,7 +177,7 @@ func (a *Application) Close() error {
 	if a.otelShutdown != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return errors.Join(a.otelShutdown(ctx))
+		return a.otelShutdown(ctx)
 	}
 	return nil
 }
