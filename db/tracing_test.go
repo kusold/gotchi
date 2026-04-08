@@ -59,13 +59,13 @@ func TestMultiTracer_EmptyTracers(t *testing.T) {
 
 func TestSetupTracing_SingleTracer(t *testing.T) {
 	cfg := pgxpoolConfig(t)
-	result := setupTracing(cfg, Config{EnableTracing: true})
+	result := setupTracing(cfg, Config{EnableSlogTracing: true})
 	assert.NotNil(t, result.ConnConfig.Tracer)
 }
 
 func TestSetupTracing_MultipleTracers(t *testing.T) {
 	cfg := pgxpoolConfig(t)
-	result := setupTracing(cfg, Config{EnableTracing: true, OTELTracing: true})
+	result := setupTracing(cfg, Config{EnableSlogTracing: true, OTELTracing: true})
 	_, ok := result.ConnConfig.Tracer.(*multiTracer)
 	assert.True(t, ok, "should use multiTracer when both tracing types are enabled")
 }

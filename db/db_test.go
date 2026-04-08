@@ -46,7 +46,7 @@ func connectManager(t *testing.T, sources ...db.MigrationSource) *db.Manager {
 		mgr.AddMigrationSource(src)
 	}
 	require.NoError(t, mgr.Connect(context.Background()))
-	t.Cleanup(mgr.Close)
+	t.Cleanup(func() { _ = mgr.Close() })
 	return mgr
 }
 
@@ -76,7 +76,7 @@ func TestManager_RunMigrations_BeforeConnect(t *testing.T) {
 
 func TestManager_Close_NilPool(t *testing.T) {
 	mgr := db.NewManager(db.Config{DatabaseURL: "postgres://localhost/test"})
-	assert.NotPanics(t, mgr.Close)
+	assert.NotPanics(t, func() { _ = mgr.Close() })
 }
 
 func TestManager_Connect_InvalidURL(t *testing.T) {
@@ -142,7 +142,7 @@ func TestManager_Connect_WithSearchPath(t *testing.T) {
 		SearchPath:  "test_search_schema",
 	})
 	require.NoError(t, mgr.Connect(ctx))
-	t.Cleanup(mgr.Close)
+	t.Cleanup(func() { _ = mgr.Close() })
 
 	conn, err := mgr.Pool().Acquire(ctx)
 	require.NoError(t, err)

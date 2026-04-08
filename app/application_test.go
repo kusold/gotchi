@@ -88,14 +88,14 @@ func TestRealClock(t *testing.T) {
 
 func TestApplicationInitialState(t *testing.T) {
 	cfg := testConfig()
-	cfg.Database.EnableTracing = true
+	cfg.Database.EnableSlogTracing = true
 	app, err := New(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, app.router)
 	assert.NotNil(t, app.db)
 	assert.Equal(t, "3000", app.cfg.Server.Port)
 	assert.Equal(t, "postgres://example", app.cfg.Database.DatabaseURL)
-	assert.True(t, app.cfg.Database.EnableTracing)
+	assert.True(t, app.cfg.Database.EnableSlogTracing)
 }
 
 func TestNewAppliesDefaults(t *testing.T) {

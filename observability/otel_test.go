@@ -10,9 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 )
 
 func setupTracerProvider(t *testing.T) *tracetest.SpanRecorder {
@@ -23,6 +27,26 @@ func setupTracerProvider(t *testing.T) *tracetest.SpanRecorder {
 	otel.SetTracerProvider(tp)
 	t.Cleanup(func() { otel.SetTracerProvider(originalTP) })
 	return spanRecorder
+}
+
+func setupMeterProvider(t *testing.T) *sdkmetric.ManualReader {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalMP := otel.GetMeterProvider()
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() { otel.SetMeterProvider(originalMP) })
+	return reader
+}
+
+func attrMap(set attribute.Set) map[attribute.Key]any {
+	m := make(map[attribute.Key]any)
+	iter := set.Iter()
+	for iter.Next() {
+		kv := iter.Attribute()
+		m[kv.Key] = kv.Value.AsInterface()
+	}
+	return m
 }
 
 func TestOTELConfig_WithDefaults(t *testing.T) {
@@ -122,6 +146,29 @@ func TestSetupOTEL_ShutdownReturnsShutdownErrors(t *testing.T) {
 	require.Error(t, err, "shutdown with expired context should return error")
 }
 
+func TestSetupOTEL_UnreachableEndpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cfg := OTELConfig{
+		Enabled:     true,
+		ExporterURL: "192.0.2.1:4317",
+		Insecure:    true,
+	}
+
+	shutdown, err := SetupOTEL(ctx, cfg)
+	if err != nil {
+		assert.Contains(t, err.Error(), "creating OTLP")
+		return
+	}
+	require.NotNil(t, shutdown)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer shutdownCancel()
+	shutdownErr := shutdown(shutdownCtx)
+	assert.Error(t, shutdownErr, "shutdown with unreachable endpoint should return error")
+}
+
 func TestTracingMiddleware_CreatesSpan(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 
@@ -191,25 +238,140 @@ func TestTracingMiddleware_PropagatesContext(t *testing.T) {
 	assert.NotNil(t, capturedCtx)
 }
 
-func TestHTTPMetricsMiddleware_RecordsMetrics(t *testing.T) {
+func TestOTELMiddleware_DurationHistogramAttributes(t *testing.T) {
 	setupTracerProvider(t)
+	reader := setupMeterProvider(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Millisecond)
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	middleware := OTELMiddleware("test-service")(handler)
+	req := httptest.NewRequest(http.MethodPost, "/api/users", nil)
+	rec := httptest.NewRecorder()
+	middleware.ServeHTTP(rec, req)
+
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+
+	require.Len(t, rm.ScopeMetrics, 1, "expected one scope")
+
+	var histogramFound bool
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "http.server.request.duration" {
+			histogram, ok := m.Data.(metricdata.Histogram[float64])
+			require.True(t, ok)
+			require.Len(t, histogram.DataPoints, 1)
+
+			dp := histogram.DataPoints[0]
+			assert.GreaterOrEqual(t, dp.Sum, float64(0), "duration should be >= 0")
+			assert.Equal(t, uint64(1), dp.Count)
+
+			attrs := attrMap(dp.Attributes)
+			assert.Equal(t, "POST", attrs[semconv.HTTPRequestMethodKey])
+			assert.Equal(t, "/api/users", attrs[semconv.URLPathKey])
+			assert.Equal(t, int64(201), attrs[semconv.HTTPResponseStatusCodeKey])
+			histogramFound = true
+			break
+		}
+	}
+	assert.True(t, histogramFound, "expected http.server.request.duration histogram")
+}
+
+func TestOTELMiddleware_RequestCounterIncrements(t *testing.T) {
+	setupTracerProvider(t)
+	reader := setupMeterProvider(t)
+
+	callCount := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
 		w.WriteHeader(http.StatusOK)
 	})
 
 	middleware := OTELMiddleware("test-service")(handler)
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	rec := httptest.NewRecorder()
-	require.NotPanics(t, func() {
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+		rec := httptest.NewRecorder()
 		middleware.ServeHTTP(rec, req)
-	})
+	}
+	assert.Equal(t, 3, callCount)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+
+	require.Len(t, rm.ScopeMetrics, 1, "expected one scope")
+
+	var counterFound bool
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "http.server.request.count" {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			require.Len(t, sum.DataPoints, 1)
+
+			dp := sum.DataPoints[0]
+			assert.Equal(t, int64(3), dp.Value, "counter should have incremented 3 times")
+
+			attrs := attrMap(dp.Attributes)
+			assert.Equal(t, "GET", attrs[semconv.HTTPRequestMethodKey])
+			assert.Equal(t, "/api/test", attrs[semconv.URLPathKey])
+			assert.Equal(t, int64(200), attrs[semconv.HTTPResponseStatusCodeKey])
+			counterFound = true
+			break
+		}
+	}
+	assert.True(t, counterFound, "expected http.server.request.count counter")
 }
 
-func TestHTTPMetricsMiddleware_CapturesStatusCodes(t *testing.T) {
+func TestOTELMiddleware_MetricsDistinctAttributesPerStatus(t *testing.T) {
+	setupTracerProvider(t)
+	reader := setupMeterProvider(t)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statusStr := r.URL.Query().Get("status")
+		if statusStr == "500" {
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	middleware := OTELMiddleware("test-service")(handler)
+
+	for _, status := range []string{"200", "500", "200"} {
+		req := httptest.NewRequest(http.MethodGet, "/test?status="+status, nil)
+		rec := httptest.NewRecorder()
+		middleware.ServeHTTP(rec, req)
+	}
+
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+
+	require.Len(t, rm.ScopeMetrics, 1, "expected one scope")
+
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "http.server.request.count" {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+
+			statusCounts := map[int]int64{}
+			for _, dp := range sum.DataPoints {
+				attrs := attrMap(dp.Attributes)
+				statusCode := attrs[semconv.HTTPResponseStatusCodeKey].(int64)
+				statusCounts[int(statusCode)] = dp.Value
+			}
+			assert.Equal(t, int64(2), statusCounts[200], "200 count should be 2")
+			assert.Equal(t, int64(1), statusCounts[500], "500 count should be 1")
+			break
+		}
+	}
+}
+
+func TestOTELMiddleware_CapturesStatusCodes(t *testing.T) {
 	setupTracerProvider(t)
 
 	tests := []struct {
@@ -235,4 +397,20 @@ func TestHTTPMetricsMiddleware_CapturesStatusCodes(t *testing.T) {
 			assert.Equal(t, tt.statusCode, rec.Code)
 		})
 	}
+}
+
+func TestGetStatusRecorder_ReusesExisting(t *testing.T) {
+	rec := httptest.NewRecorder()
+	existing := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+
+	result := getStatusRecorder(existing)
+	assert.Equal(t, existing, result, "should reuse existing statusRecorder")
+}
+
+func TestGetStatusRecorder_WrapsNew(t *testing.T) {
+	rec := httptest.NewRecorder()
+	result := getStatusRecorder(rec)
+
+	assert.IsType(t, &statusRecorder{}, result)
+	assert.Equal(t, http.StatusOK, result.status)
 }

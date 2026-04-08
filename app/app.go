@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -173,13 +174,18 @@ func (a *Application) Run(ctx context.Context) error {
 }
 
 func (a *Application) Close() error {
-	a.db.Close()
+	var errs []error
+	if err := a.db.Close(); err != nil {
+		errs = append(errs, err)
+	}
 	if a.otelShutdown != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return a.otelShutdown(ctx)
+		if err := a.otelShutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func defaultLoginHandler(w http.ResponseWriter, _ *http.Request) {
