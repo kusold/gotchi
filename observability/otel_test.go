@@ -56,6 +56,8 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 		assert.Equal(t, "localhost:4317", cfg.ExporterURL)
 		assert.Equal(t, 1.0, cfg.SampleRate)
 		assert.Equal(t, 5*time.Second, cfg.ShutdownTimeout)
+		assert.True(t, *cfg.EnableTracing)
+		assert.True(t, *cfg.EnableMetrics)
 	})
 
 	t.Run("preserves provided values", func(t *testing.T) {
@@ -94,6 +96,24 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 	t.Run("defaults insecure to false", func(t *testing.T) {
 		cfg := OTELConfig{}.WithDefaults()
 		assert.False(t, cfg.Insecure)
+	})
+
+	t.Run("allows disabling tracing only", func(t *testing.T) {
+		cfg := OTELConfig{Enabled: true, EnableTracing: boolPtr(false)}.WithDefaults()
+		assert.False(t, cfg.TracingEnabled())
+		assert.True(t, cfg.MetricsEnabled())
+	})
+
+	t.Run("allows disabling metrics only", func(t *testing.T) {
+		cfg := OTELConfig{Enabled: true, EnableMetrics: boolPtr(false)}.WithDefaults()
+		assert.True(t, cfg.TracingEnabled())
+		assert.False(t, cfg.MetricsEnabled())
+	})
+
+	t.Run("TracingEnabled returns false when parent disabled", func(t *testing.T) {
+		cfg := OTELConfig{Enabled: false}.WithDefaults()
+		assert.False(t, cfg.TracingEnabled())
+		assert.False(t, cfg.MetricsEnabled())
 	})
 }
 

@@ -90,7 +90,9 @@ func (a *Application) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up OTEL: %w", err)
 		}
 		a.otelShutdown = shutdown
-		a.db.EnableOTELTracing()
+		if a.cfg.OTEL.TracingEnabled() {
+			a.db.EnableOTELTracing()
+		}
 	}
 
 	if err := a.db.Connect(ctx); err != nil {
@@ -146,8 +148,10 @@ func (a *Application) Run(ctx context.Context) error {
 	a.router.Use(chiMiddleware.Logger)
 	a.router.Use(chiMiddleware.Recoverer)
 
-	if a.cfg.OTEL.Enabled {
+	if a.cfg.OTEL.TracingEnabled() {
 		a.router.Use(observability.OTELTracingMiddleware(a.cfg.OTEL.ServiceName))
+	}
+	if a.cfg.OTEL.MetricsEnabled() {
 		a.router.Use(observability.OTELMetricsMiddleware(a.cfg.OTEL.ServiceName))
 	}
 

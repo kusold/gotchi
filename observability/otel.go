@@ -24,6 +24,8 @@ import (
 
 type OTELConfig struct {
 	Enabled         bool
+	EnableTracing   *bool
+	EnableMetrics   *bool
 	ServiceName     string
 	ExporterURL     string
 	SampleRate      float64
@@ -45,8 +47,24 @@ func (c OTELConfig) WithDefaults() OTELConfig {
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 5 * time.Second
 	}
+	if cfg.EnableTracing == nil {
+		cfg.EnableTracing = boolPtr(true)
+	}
+	if cfg.EnableMetrics == nil {
+		cfg.EnableMetrics = boolPtr(true)
+	}
 	return cfg
 }
+
+func (c OTELConfig) TracingEnabled() bool {
+	return c.Enabled && c.EnableTracing != nil && *c.EnableTracing
+}
+
+func (c OTELConfig) MetricsEnabled() bool {
+	return c.Enabled && c.EnableMetrics != nil && *c.EnableMetrics
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error, error) {
 	cfg = cfg.WithDefaults()
