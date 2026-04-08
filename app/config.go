@@ -6,6 +6,7 @@ import (
 
 	"github.com/kusold/gotchi/auth"
 	"github.com/kusold/gotchi/db"
+	"github.com/kusold/gotchi/observability"
 	"github.com/kusold/gotchi/openapi"
 	"github.com/kusold/gotchi/session"
 )
@@ -17,6 +18,7 @@ type Config struct {
 	Auth       AuthConfig
 	OpenAPI    openapi.Config
 	Migrations MigrationConfig
+	OTEL       observability.OTELConfig
 }
 
 type ServerConfig struct {
