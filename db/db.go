@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,8 +21,9 @@ import (
 
 type Config struct {
 	DatabaseURL   string
-	SearchPath    string // Optional: set search_path for all connections (used by migration-regression)
+	SearchPath    string
 	EnableTracing bool
+	OTELTracing   bool
 }
 
 type MigrationSource struct {
@@ -56,8 +58,8 @@ func (m *Manager) Connect(ctx context.Context) error {
 		return err
 	}
 
-	if m.cfg.EnableTracing {
-		parsedCfg = setupTracing(parsedCfg)
+	if m.cfg.EnableTracing || m.cfg.OTELTracing {
+		parsedCfg = setupTracing(parsedCfg, m.cfg)
 	}
 	if m.cfg.SearchPath != "" {
 		parsedCfg.ConnConfig.RuntimeParams["search_path"] = m.cfg.SearchPath
@@ -168,11 +170,43 @@ func isUndefinedFunctionError(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "42883"
 }
 
-func setupTracing(cfg *pgxpool.Config) *pgxpool.Config {
-	logger := pgxslog.NewLogger(slog.Default())
-	cfg.ConnConfig.Tracer = &tracelog.TraceLog{
-		Logger:   logger,
-		LogLevel: tracelog.LogLevelTrace,
+func setupTracing(cfg *pgxpool.Config, dbCfg Config) *pgxpool.Config {
+	var tracers []pgx.QueryTracer
+
+	if dbCfg.EnableTracing {
+		logger := pgxslog.NewLogger(slog.Default())
+		tracers = append(tracers, &tracelog.TraceLog{
+			Logger:   logger,
+			LogLevel: tracelog.LogLevelTrace,
+		})
 	}
+
+	if dbCfg.OTELTracing {
+		tracers = append(tracers, otelpgx.NewTracer())
+	}
+
+	if len(tracers) == 1 {
+		cfg.ConnConfig.Tracer = tracers[0]
+	} else if len(tracers) > 1 {
+		cfg.ConnConfig.Tracer = &multiTracer{tracers: tracers}
+	}
+
 	return cfg
+}
+
+type multiTracer struct {
+	tracers []pgx.QueryTracer
+}
+
+func (mt *multiTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	for _, t := range mt.tracers {
+		ctx = t.TraceQueryStart(ctx, conn, data)
+	}
+	return ctx
+}
+
+func (mt *multiTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	for i := len(mt.tracers) - 1; i >= 0; i-- {
+		mt.tracers[i].TraceQueryEnd(ctx, conn, data)
+	}
 }

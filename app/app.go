@@ -55,6 +55,7 @@ type Application struct {
 	db           *db.Manager
 	dependencies Dependencies
 	modules      []Module
+	otelShutdown func(context.Context) error
 }
 
 func New(cfg Config, modules ...Module) (*Application, error) {
@@ -82,6 +83,18 @@ func (a *Application) Dependencies() Dependencies {
 }
 
 func (a *Application) Run(ctx context.Context) error {
+	if a.cfg.OTEL.Enabled {
+		shutdown, err := observability.SetupOTEL(ctx, a.cfg.OTEL)
+		if err != nil {
+			return fmt.Errorf("setting up OTEL: %w", err)
+		}
+		a.otelShutdown = shutdown
+	}
+
+	if a.cfg.OTEL.Enabled {
+		a.cfg.Database.OTELTracing = true
+	}
+
 	if err := a.db.Connect(ctx); err != nil {
 		return err
 	}
@@ -134,6 +147,16 @@ func (a *Application) Run(ctx context.Context) error {
 	a.router.Use(chiMiddleware.RealIP)
 	a.router.Use(chiMiddleware.Logger)
 	a.router.Use(chiMiddleware.Recoverer)
+
+	if a.cfg.OTEL.Enabled {
+		serviceName := a.cfg.OTEL.ServiceName
+		if serviceName == "" {
+			serviceName = "gotchi"
+		}
+		a.router.Use(observability.TracingMiddleware(serviceName))
+		a.router.Use(observability.HTTPMetricsMiddleware(serviceName))
+	}
+
 	a.router.Use(sessionManager.LoadAndSave)
 	a.router.Use(observability.CorrelationAndAudit(sessionManager, a.cfg.Auth.OIDC.SessionKey))
 
@@ -159,6 +182,9 @@ func (a *Application) Run(ctx context.Context) error {
 
 func (a *Application) Close() error {
 	a.db.Close()
+	if a.otelShutdown != nil {
+		return a.otelShutdown(context.Background())
+	}
 	return nil
 }
 
