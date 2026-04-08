@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -22,13 +23,27 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// routePattern extracts the matched route template from Chi's RouteContext.
+// If no route was matched (e.g. 404), it returns a static placeholder to
+// prevent high-cardinality attribute values from unmatched paths.
+func routePattern(r *http.Request) string {
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil {
+		return ""
+	}
+	if pattern := rctx.RoutePattern(); pattern != "" && pattern != "/*" {
+		return pattern
+	}
+	return ""
+}
+
 type OTELConfig struct {
 	Enabled         bool
 	EnableTracing   *bool
 	EnableMetrics   *bool
 	ServiceName     string
 	ExporterURL     string
-	SampleRate      float64
+	SampleRate      *float64
 	Insecure        bool
 	ShutdownTimeout time.Duration
 }
@@ -41,8 +56,8 @@ func (c OTELConfig) WithDefaults() OTELConfig {
 	if cfg.ExporterURL == "" {
 		cfg.ExporterURL = "localhost:4317"
 	}
-	if cfg.SampleRate == 0 {
-		cfg.SampleRate = 1.0
+	if cfg.SampleRate == nil {
+		cfg.SampleRate = float64Ptr(1.0)
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 5 * time.Second
@@ -64,7 +79,8 @@ func (c OTELConfig) MetricsEnabled() bool {
 	return c.Enabled && c.EnableMetrics != nil && *c.EnableMetrics
 }
 
-func boolPtr(b bool) *bool { return &b }
+func boolPtr(b bool) *bool          { return &b }
+func float64Ptr(f float64) *float64 { return &f }
 
 func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error, error) {
 	cfg = cfg.WithDefaults()
@@ -89,7 +105,7 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(cfg.SampleRate)),
+		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(*cfg.SampleRate)),
 		sdktrace.WithBatcher(traceExporter),
 	)
 	otel.SetTracerProvider(tp)
@@ -130,8 +146,8 @@ func OTELTracingMiddleware(serviceName string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
-			spanName := r.Method + " " + r.URL.Path
-			ctx, span := tracer.Start(ctx, spanName,
+			// Start span with a generic name; Chi hasn't matched the route yet.
+			ctx, span := tracer.Start(ctx, r.Method,
 				trace.WithAttributes(
 					semconv.HTTPRequestMethodKey.String(r.Method),
 					semconv.URLPathKey.String(r.URL.Path),
@@ -145,6 +161,13 @@ func OTELTracingMiddleware(serviceName string) func(http.Handler) http.Handler {
 			r = r.WithContext(ctx)
 
 			next.ServeHTTP(rw, r)
+
+			// After routing, Chi's RouteContext is populated with the
+			// matched route template (e.g. "/users/{id}").
+			if route := routePattern(r); route != "" {
+				span.SetName(r.Method + " " + route)
+				span.SetAttributes(semconv.HTTPRouteKey.String(route))
+			}
 
 			statusCode := rw.status
 			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(statusCode))
@@ -183,8 +206,10 @@ func OTELMetricsMiddleware(serviceName string) func(http.Handler) http.Handler {
 			statusCode := rw.status
 			attrs := []attribute.KeyValue{
 				semconv.HTTPRequestMethodKey.String(r.Method),
-				semconv.URLPathKey.String(r.URL.Path),
 				semconv.HTTPResponseStatusCodeKey.Int(statusCode),
+			}
+			if route := routePattern(r); route != "" {
+				attrs = append(attrs, semconv.HTTPRouteKey.String(route))
 			}
 			duration.Record(r.Context(), float64(time.Since(start).Milliseconds()), metric.WithAttributes(attrs...))
 			requestCount.Add(r.Context(), 1, metric.WithAttributes(attrs...))
