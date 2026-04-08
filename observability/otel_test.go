@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -54,7 +55,7 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 		cfg := OTELConfig{}.WithDefaults()
 		assert.Equal(t, "gotchi", cfg.ServiceName)
 		assert.Equal(t, "localhost:4317", cfg.ExporterURL)
-		assert.Equal(t, 1.0, cfg.SampleRate)
+		assert.Equal(t, 1.0, *cfg.SampleRate)
 		assert.Equal(t, 5*time.Second, cfg.ShutdownTimeout)
 		assert.True(t, *cfg.EnableTracing)
 		assert.True(t, *cfg.EnableMetrics)
@@ -64,12 +65,12 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 		cfg := OTELConfig{
 			ServiceName:     "my-service",
 			ExporterURL:     "collector:4317",
-			SampleRate:      0.5,
+			SampleRate:      float64Ptr(0.5),
 			ShutdownTimeout: 10 * time.Second,
 		}.WithDefaults()
 		assert.Equal(t, "my-service", cfg.ServiceName)
 		assert.Equal(t, "collector:4317", cfg.ExporterURL)
-		assert.Equal(t, 0.5, cfg.SampleRate)
+		assert.Equal(t, 0.5, *cfg.SampleRate)
 		assert.Equal(t, 10*time.Second, cfg.ShutdownTimeout)
 	})
 
@@ -78,14 +79,14 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 		assert.True(t, cfg.Enabled)
 	})
 
-	t.Run("handles zero sample rate", func(t *testing.T) {
-		cfg := OTELConfig{SampleRate: 0}.WithDefaults()
-		assert.Equal(t, 1.0, cfg.SampleRate)
+	t.Run("defaults nil sample rate to 1.0", func(t *testing.T) {
+		cfg := OTELConfig{}.WithDefaults()
+		assert.Equal(t, 1.0, *cfg.SampleRate)
 	})
 
-	t.Run("handles explicit sample rate of 0.0", func(t *testing.T) {
-		cfg := OTELConfig{SampleRate: 0.0}.WithDefaults()
-		assert.Equal(t, 1.0, cfg.SampleRate)
+	t.Run("preserves explicit sample rate of 0.0", func(t *testing.T) {
+		cfg := OTELConfig{SampleRate: float64Ptr(0.0)}.WithDefaults()
+		assert.Equal(t, 0.0, *cfg.SampleRate)
 	})
 
 	t.Run("preserves insecure flag", func(t *testing.T) {
@@ -195,15 +196,15 @@ func TestSetupOTEL_UnreachableEndpoint(t *testing.T) {
 func TestOTELTracingMiddleware_CreatesSpan(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	r := chi.NewRouter()
+	r.Use(OTELTracingMiddleware("test-service"))
+	r.Get("/api/test", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELTracingMiddleware("test-service")(handler)
-
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	rec := httptest.NewRecorder()
-	middleware.ServeHTTP(rec, req)
+	r.ServeHTTP(rec, req)
 
 	spans := spanRecorder.Ended()
 	require.Len(t, spans, 1)
@@ -228,14 +229,15 @@ func TestOTELTracingMiddleware_RecordsStatusCode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			spanRecorder.Reset()
 
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r := chi.NewRouter()
+			r.Use(OTELTracingMiddleware("test-service"))
+			r.Get("/test", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.statusCode)
 			})
 
-			middleware := OTELTracingMiddleware("test-service")(handler)
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
-			middleware.ServeHTTP(rec, req)
+			r.ServeHTTP(rec, req)
 
 			spans := spanRecorder.Ended()
 			require.Len(t, spans, 1)
@@ -248,15 +250,16 @@ func TestOTELTracingMiddleware_PropagatesContext(t *testing.T) {
 	setupTracerProvider(t)
 
 	var capturedCtx context.Context
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	r := chi.NewRouter()
+	r.Use(OTELTracingMiddleware("test-service"))
+	r.Get("/test", func(w http.ResponseWriter, r *http.Request) {
 		capturedCtx = r.Context()
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELTracingMiddleware("test-service")(handler)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
-	middleware.ServeHTTP(rec, req)
+	r.ServeHTTP(rec, req)
 
 	assert.NotNil(t, capturedCtx)
 }
@@ -265,15 +268,16 @@ func TestOTELMetricsMiddleware_DurationHistogramAttributes(t *testing.T) {
 	setupTracerProvider(t)
 	reader := setupMeterProvider(t)
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	r := chi.NewRouter()
+	r.Use(OTELMetricsMiddleware("test-service"))
+	r.Post("/api/users", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Millisecond)
 		w.WriteHeader(http.StatusCreated)
 	})
 
-	middleware := OTELMetricsMiddleware("test-service")(handler)
 	req := httptest.NewRequest(http.MethodPost, "/api/users", nil)
 	rec := httptest.NewRecorder()
-	middleware.ServeHTTP(rec, req)
+	r.ServeHTTP(rec, req)
 
 	var rm metricdata.ResourceMetrics
 	err := reader.Collect(context.Background(), &rm)
@@ -294,7 +298,7 @@ func TestOTELMetricsMiddleware_DurationHistogramAttributes(t *testing.T) {
 
 			attrs := attrMap(dp.Attributes)
 			assert.Equal(t, "POST", attrs[semconv.HTTPRequestMethodKey])
-			assert.Equal(t, "/api/users", attrs[semconv.URLPathKey])
+			assert.Equal(t, "/api/users", attrs[semconv.HTTPRouteKey])
 			assert.Equal(t, int64(201), attrs[semconv.HTTPResponseStatusCodeKey])
 			histogramFound = true
 			break
@@ -308,17 +312,17 @@ func TestOTELMetricsMiddleware_RequestCounterIncrements(t *testing.T) {
 	reader := setupMeterProvider(t)
 
 	callCount := 0
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	r := chi.NewRouter()
+	r.Use(OTELMetricsMiddleware("test-service"))
+	r.Get("/api/test", func(w http.ResponseWriter, req *http.Request) {
 		callCount++
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELMetricsMiddleware("test-service")(handler)
-
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 		rec := httptest.NewRecorder()
-		middleware.ServeHTTP(rec, req)
+		r.ServeHTTP(rec, req)
 	}
 	assert.Equal(t, 3, callCount)
 
@@ -340,7 +344,7 @@ func TestOTELMetricsMiddleware_RequestCounterIncrements(t *testing.T) {
 
 			attrs := attrMap(dp.Attributes)
 			assert.Equal(t, "GET", attrs[semconv.HTTPRequestMethodKey])
-			assert.Equal(t, "/api/test", attrs[semconv.URLPathKey])
+			assert.Equal(t, "/api/test", attrs[semconv.HTTPRouteKey])
 			assert.Equal(t, int64(200), attrs[semconv.HTTPResponseStatusCodeKey])
 			counterFound = true
 			break
@@ -353,8 +357,10 @@ func TestOTELMetricsMiddleware_DistinctAttributesPerStatus(t *testing.T) {
 	setupTracerProvider(t)
 	reader := setupMeterProvider(t)
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		statusStr := r.URL.Query().Get("status")
+	r := chi.NewRouter()
+	r.Use(OTELMetricsMiddleware("test-service"))
+	r.Get("/test", func(w http.ResponseWriter, req *http.Request) {
+		statusStr := req.URL.Query().Get("status")
 		if statusStr == "500" {
 			w.WriteHeader(http.StatusInternalServerError)
 		} else {
@@ -362,12 +368,10 @@ func TestOTELMetricsMiddleware_DistinctAttributesPerStatus(t *testing.T) {
 		}
 	})
 
-	middleware := OTELMetricsMiddleware("test-service")(handler)
-
 	for _, status := range []string{"200", "500", "200"} {
 		req := httptest.NewRequest(http.MethodGet, "/test?status="+status, nil)
 		rec := httptest.NewRecorder()
-		middleware.ServeHTTP(rec, req)
+		r.ServeHTTP(rec, req)
 	}
 
 	var rm metricdata.ResourceMetrics
@@ -398,14 +402,15 @@ func TestOTELMiddleware_CombinesTracingAndMetrics(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 	reader := setupMeterProvider(t)
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	r := chi.NewRouter()
+	r.Use(OTELMiddleware("test-service"))
+	r.Get("/combined", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELMiddleware("test-service")(handler)
 	req := httptest.NewRequest(http.MethodGet, "/combined", nil)
 	rec := httptest.NewRecorder()
-	middleware.ServeHTTP(rec, req)
+	r.ServeHTTP(rec, req)
 
 	spans := spanRecorder.Ended()
 	require.Len(t, spans, 1)
@@ -443,14 +448,15 @@ func TestOTELMiddleware_CapturesStatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r := chi.NewRouter()
+			r.Use(OTELMiddleware("test-service"))
+			r.Get("/test", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.statusCode)
 			})
 
-			middleware := OTELMiddleware("test-service")(handler)
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
-			middleware.ServeHTTP(rec, req)
+			r.ServeHTTP(rec, req)
 
 			assert.Equal(t, tt.statusCode, rec.Code)
 		})
@@ -471,4 +477,122 @@ func TestGetStatusRecorder_WrapsNew(t *testing.T) {
 
 	assert.IsType(t, &statusRecorder{}, result)
 	assert.Equal(t, http.StatusOK, result.status)
+}
+
+func TestRoutePattern_UsesChiRoutePattern(t *testing.T) {
+	r := chi.NewRouter()
+	r.Get("/api/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/users/{id}", routePattern(r))
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/42", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+}
+
+func TestRoutePattern_ReturnsEmptyWithoutChiContext(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/users/42", nil)
+	assert.Equal(t, "", routePattern(req))
+}
+
+func TestRoutePattern_ReturnsEmptyForUnmatchedRoute(t *testing.T) {
+	r := chi.NewRouter()
+	r.Get("/api/users", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/missing", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	// Chi returns 404 for unmatched routes; routePattern should return ""
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestOTELTracingMiddleware_RoutePatternResolution(t *testing.T) {
+	tests := []struct {
+		name          string
+		route         string
+		requestPath   string
+		expectName    string
+		expectRoute   string
+		expectURLPath string
+	}{
+		{
+			name:          "resolves parameterized route template",
+			route:         "/api/users/{id}/posts",
+			requestPath:   "/api/users/550e8400-e29b-41d4-a716-446655440000/posts",
+			expectName:    "GET /api/users/{id}/posts",
+			expectRoute:   "/api/users/{id}/posts",
+			expectURLPath: "/api/users/550e8400-e29b-41d4-a716-446655440000/posts",
+		},
+		{
+			name:        "omits http.route for unmatched paths",
+			route:       "/api/users",
+			requestPath: "/api/unknown/550e8400-e29b-41d4-a716-446655440000",
+			expectName:  "GET",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spanRecorder := setupTracerProvider(t)
+
+			r := chi.NewRouter()
+			r.Use(OTELTracingMiddleware("test-service"))
+			r.Get(tt.route, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			spans := spanRecorder.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, tt.expectName, spans[0].Name())
+
+			attrs := attrMap(attribute.NewSet(spans[0].Attributes()...))
+			if tt.expectRoute != "" {
+				assert.Equal(t, tt.expectRoute, attrs[semconv.HTTPRouteKey])
+				assert.Equal(t, tt.expectURLPath, attrs[semconv.URLPathKey])
+			} else {
+				_, hasRoute := attrs[semconv.HTTPRouteKey]
+				assert.False(t, hasRoute, "http.route should not be set for unmatched paths")
+			}
+		})
+	}
+}
+
+func TestOTELMetricsMiddleware_UsesRoutePatternForDynamicPaths(t *testing.T) {
+	setupTracerProvider(t)
+	reader := setupMeterProvider(t)
+
+	r := chi.NewRouter()
+	r.Use(OTELMetricsMiddleware("test-service"))
+	r.Get("/api/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/42", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+
+	require.Len(t, rm.ScopeMetrics, 1)
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "http.server.request.count" {
+			sum := m.Data.(metricdata.Sum[int64])
+			require.Len(t, sum.DataPoints, 1)
+			attrs := attrMap(sum.DataPoints[0].Attributes)
+			assert.Equal(t, "/api/users/{id}", attrs[semconv.HTTPRouteKey])
+			_, hasURLPath := attrs[semconv.URLPathKey]
+			assert.False(t, hasURLPath, "url.path should not be a metric attribute")
+			break
+		}
+	}
 }
