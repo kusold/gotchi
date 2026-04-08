@@ -2,7 +2,9 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -25,6 +27,7 @@ type OTELConfig struct {
 	ServiceName string
 	ExporterURL string
 	SampleRate  float64
+	Insecure    bool
 }
 
 func (c OTELConfig) WithDefaults() OTELConfig {
@@ -53,10 +56,11 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 		return nil, fmt.Errorf("creating OTEL resource: %w", err)
 	}
 
-	traceExporter, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithEndpoint(cfg.ExporterURL),
-		otlptracegrpc.WithInsecure(),
-	)
+	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.ExporterURL)}
+	if cfg.Insecure {
+		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+	}
+	traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP trace exporter: %w", err)
 	}
@@ -68,10 +72,11 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 	)
 	otel.SetTracerProvider(tp)
 
-	metricExporter, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(cfg.ExporterURL),
-		otlpmetricgrpc.WithInsecure(),
-	)
+	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.ExporterURL)}
+	if cfg.Insecure {
+		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+	}
+	metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP metric exporter: %w", err)
 	}
@@ -88,17 +93,10 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 	))
 
 	return func(ctx context.Context) error {
-		var errs []error
-		if err := tp.Shutdown(ctx); err != nil {
-			errs = append(errs, err)
-		}
-		if err := mp.Shutdown(ctx); err != nil {
-			errs = append(errs, err)
-		}
-		if len(errs) > 0 {
-			return fmt.Errorf("OTEL shutdown: %v", errs)
-		}
-		return nil
+		return errors.Join(
+			tp.Shutdown(ctx),
+			mp.Shutdown(ctx),
+		)
 	}, nil
 }
 
@@ -115,7 +113,6 @@ func TracingMiddleware(serviceName string) func(http.Handler) http.Handler {
 				trace.WithAttributes(
 					semconv.HTTPRequestMethodKey.String(r.Method),
 					semconv.URLPathKey.String(r.URL.Path),
-					semconv.URLFullKey.String(r.URL.String()),
 					semconv.ServerAddressKey.String(r.Host),
 				),
 				trace.WithSpanKind(trace.SpanKindServer),
@@ -137,15 +134,21 @@ func TracingMiddleware(serviceName string) func(http.Handler) http.Handler {
 
 func HTTPMetricsMiddleware(serviceName string) func(http.Handler) http.Handler {
 	meter := otel.Meter(serviceName)
-	duration, _ := meter.Float64Histogram(
+	duration, err := meter.Float64Histogram(
 		"http.server.request.duration",
 		metric.WithDescription("Duration of HTTP server requests in milliseconds"),
 		metric.WithUnit("ms"),
 	)
-	requestCount, _ := meter.Int64Counter(
+	if err != nil {
+		slog.Warn("failed to create HTTP duration histogram, metrics will not be recorded", "err", err)
+	}
+	requestCount, err := meter.Int64Counter(
 		"http.server.request.count",
 		metric.WithDescription("Count of HTTP server requests"),
 	)
+	if err != nil {
+		slog.Warn("failed to create HTTP request counter, metrics will not be recorded", "err", err)
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

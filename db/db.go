@@ -21,7 +21,7 @@ import (
 
 type Config struct {
 	DatabaseURL   string
-	SearchPath    string
+	SearchPath    string // Optional: set search_path for all connections (used by migration-regression)
 	EnableTracing bool
 	OTELTracing   bool
 }
