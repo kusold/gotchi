@@ -57,12 +57,23 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 		cfg := OTELConfig{SampleRate: 0.0}.WithDefaults()
 		assert.Equal(t, 1.0, cfg.SampleRate)
 	})
+
+	t.Run("preserves insecure flag", func(t *testing.T) {
+		cfg := OTELConfig{Insecure: true}.WithDefaults()
+		assert.True(t, cfg.Insecure)
+	})
+
+	t.Run("defaults insecure to false", func(t *testing.T) {
+		cfg := OTELConfig{}.WithDefaults()
+		assert.False(t, cfg.Insecure)
+	})
 }
 
 func TestSetupOTEL_SetsGlobalProviders(t *testing.T) {
 	cfg := OTELConfig{
 		Enabled:     true,
 		ExporterURL: "localhost:4317",
+		Insecure:    true,
 	}
 	shutdown, err := SetupOTEL(context.Background(), cfg)
 	require.NoError(t, err)

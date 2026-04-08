@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -89,9 +90,6 @@ func (a *Application) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up OTEL: %w", err)
 		}
 		a.otelShutdown = shutdown
-	}
-
-	if a.cfg.OTEL.Enabled {
 		a.cfg.Database.OTELTracing = true
 	}
 
@@ -149,12 +147,8 @@ func (a *Application) Run(ctx context.Context) error {
 	a.router.Use(chiMiddleware.Recoverer)
 
 	if a.cfg.OTEL.Enabled {
-		serviceName := a.cfg.OTEL.ServiceName
-		if serviceName == "" {
-			serviceName = "gotchi"
-		}
-		a.router.Use(observability.TracingMiddleware(serviceName))
-		a.router.Use(observability.HTTPMetricsMiddleware(serviceName))
+		a.router.Use(observability.TracingMiddleware(a.cfg.OTEL.ServiceName))
+		a.router.Use(observability.HTTPMetricsMiddleware(a.cfg.OTEL.ServiceName))
 	}
 
 	a.router.Use(sessionManager.LoadAndSave)
@@ -183,7 +177,9 @@ func (a *Application) Run(ctx context.Context) error {
 func (a *Application) Close() error {
 	a.db.Close()
 	if a.otelShutdown != nil {
-		return a.otelShutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return errors.Join(a.otelShutdown(ctx))
 	}
 	return nil
 }
