@@ -55,11 +55,6 @@ func TestRoleType(t *testing.T) {
 }
 
 func TestSessionClaims_Fields(t *testing.T) {
-	// This test ensures all fields on SessionClaims are accessible
-	// and have the expected types (compilation check)
-	var emptyUserID interface{} = uuid.UUID{}
-	_ = emptyUserID
-
 	claims := SessionClaims{
 		Authenticated:  true,
 		UserID:         uuid.UUID{},
