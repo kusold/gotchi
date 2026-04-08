@@ -10,14 +10,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func setupTracerProvider(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
 	spanRecorder := tracetest.NewSpanRecorder()
-	tp := trace.NewTracerProvider(trace.WithSpanProcessor(spanRecorder))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 	originalTP := otel.GetTracerProvider()
 	otel.SetTracerProvider(tp)
 	t.Cleanup(func() { otel.SetTracerProvider(originalTP) })
@@ -88,6 +89,39 @@ func TestSetupOTEL_SetsGlobalProviders(t *testing.T) {
 	_ = shutdown(ctx)
 }
 
+func TestSetupOTEL_CancelledContext(t *testing.T) {
+	cfg := OTELConfig{
+		Enabled:     true,
+		ExporterURL: "localhost:4317",
+		Insecure:    true,
+	}
+
+	shutdown, err := SetupOTEL(context.Background(), cfg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = shutdown(ctx)
+	require.Error(t, err, "shutdown with cancelled context should return error when collector is unreachable")
+}
+
+func TestSetupOTEL_ShutdownReturnsShutdownErrors(t *testing.T) {
+	cfg := OTELConfig{
+		Enabled:     true,
+		ExporterURL: "localhost:4317",
+		Insecure:    true,
+	}
+
+	shutdown, err := SetupOTEL(context.Background(), cfg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+	err = shutdown(ctx)
+	require.Error(t, err, "shutdown with expired context should return error")
+}
+
 func TestTracingMiddleware_CreatesSpan(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 
@@ -95,7 +129,7 @@ func TestTracingMiddleware_CreatesSpan(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := TracingMiddleware("test-service")(handler)
+	middleware := OTELMiddleware("test-service")(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	rec := httptest.NewRecorder()
@@ -111,12 +145,13 @@ func TestTracingMiddleware_RecordsStatusCode(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 
 	tests := []struct {
-		name       string
-		statusCode int
+		name         string
+		statusCode   int
+		expectStatus codes.Code
 	}{
-		{"200 OK", http.StatusOK},
-		{"404 Not Found", http.StatusNotFound},
-		{"500 Internal Server Error", http.StatusInternalServerError},
+		{"200 OK", http.StatusOK, codes.Unset},
+		{"404 Not Found", http.StatusNotFound, codes.Unset},
+		{"500 Internal Server Error", http.StatusInternalServerError, codes.Error},
 	}
 
 	for _, tt := range tests {
@@ -127,13 +162,14 @@ func TestTracingMiddleware_RecordsStatusCode(t *testing.T) {
 				w.WriteHeader(tt.statusCode)
 			})
 
-			middleware := TracingMiddleware("test-service")(handler)
+			middleware := OTELMiddleware("test-service")(handler)
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			middleware.ServeHTTP(rec, req)
 
 			spans := spanRecorder.Ended()
 			require.Len(t, spans, 1)
+			assert.Equal(t, tt.expectStatus, spans[0].Status().Code)
 		})
 	}
 }
@@ -147,7 +183,7 @@ func TestTracingMiddleware_PropagatesContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := TracingMiddleware("test-service")(handler)
+	middleware := OTELMiddleware("test-service")(handler)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
@@ -162,7 +198,7 @@ func TestHTTPMetricsMiddleware_RecordsMetrics(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := HTTPMetricsMiddleware("test-service")(handler)
+	middleware := OTELMiddleware("test-service")(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
@@ -191,7 +227,7 @@ func TestHTTPMetricsMiddleware_CapturesStatusCodes(t *testing.T) {
 				w.WriteHeader(tt.statusCode)
 			})
 
-			middleware := HTTPMetricsMiddleware("test-service")(handler)
+			middleware := OTELMiddleware("test-service")(handler)
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			middleware.ServeHTTP(rec, req)

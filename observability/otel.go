@@ -56,10 +56,7 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 		return nil, fmt.Errorf("creating OTEL resource: %w", err)
 	}
 
-	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.ExporterURL)}
-	if cfg.Insecure {
-		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
-	}
+	traceOpts := grpcTraceOpts(cfg)
 	traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP trace exporter: %w", err)
@@ -72,10 +69,7 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 	)
 	otel.SetTracerProvider(tp)
 
-	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.ExporterURL)}
-	if cfg.Insecure {
-		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
-	}
+	metricOpts := grpcMetricOpts(cfg)
 	metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP metric exporter: %w", err)
@@ -100,39 +94,9 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 	}, nil
 }
 
-func TracingMiddleware(serviceName string) func(http.Handler) http.Handler {
+func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
 	tracer := otel.Tracer(serviceName)
 	propagator := otel.GetTextMapPropagator()
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-
-			spanName := r.Method + " " + r.URL.Path
-			ctx, span := tracer.Start(ctx, spanName,
-				trace.WithAttributes(
-					semconv.HTTPRequestMethodKey.String(r.Method),
-					semconv.URLPathKey.String(r.URL.Path),
-					semconv.ServerAddressKey.String(r.Host),
-				),
-				trace.WithSpanKind(trace.SpanKindServer),
-			)
-			defer span.End()
-
-			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			r = r.WithContext(ctx)
-
-			next.ServeHTTP(rw, r)
-
-			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(rw.status))
-			if rw.status >= 500 {
-				span.SetStatus(codes.Error, "server error")
-			}
-		})
-	}
-}
-
-func HTTPMetricsMiddleware(serviceName string) func(http.Handler) http.Handler {
 	meter := otel.Meter(serviceName)
 	duration, err := meter.Float64Histogram(
 		"http.server.request.duration",
@@ -152,18 +116,54 @@ func HTTPMetricsMiddleware(serviceName string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
+			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+			spanName := r.Method + " " + r.URL.Path
+			ctx, span := tracer.Start(ctx, spanName,
+				trace.WithAttributes(
+					semconv.HTTPRequestMethodKey.String(r.Method),
+					semconv.URLPathKey.String(r.URL.Path),
+					semconv.ServerAddressKey.String(r.Host),
+				),
+				trace.WithSpanKind(trace.SpanKindServer),
+			)
+			defer span.End()
+
 			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			start := time.Now()
+			r = r.WithContext(ctx)
 
 			next.ServeHTTP(rw, r)
+
+			statusCode := rw.status
+			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(statusCode))
+			if statusCode >= 500 {
+				span.SetStatus(codes.Error, "server error")
+			}
 
 			attrs := []attribute.KeyValue{
 				semconv.HTTPRequestMethodKey.String(r.Method),
 				semconv.URLPathKey.String(r.URL.Path),
-				semconv.HTTPResponseStatusCodeKey.Int(rw.status),
+				semconv.HTTPResponseStatusCodeKey.Int(statusCode),
 			}
-			duration.Record(r.Context(), float64(time.Since(start).Milliseconds()), metric.WithAttributes(attrs...))
-			requestCount.Add(r.Context(), 1, metric.WithAttributes(attrs...))
+			duration.Record(ctx, float64(time.Since(start).Milliseconds()), metric.WithAttributes(attrs...))
+			requestCount.Add(ctx, 1, metric.WithAttributes(attrs...))
 		})
 	}
+}
+
+func grpcTraceOpts(cfg OTELConfig) []otlptracegrpc.Option {
+	opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.ExporterURL)}
+	if cfg.Insecure {
+		opts = append(opts, otlptracegrpc.WithInsecure())
+	}
+	return opts
+}
+
+func grpcMetricOpts(cfg OTELConfig) []otlpmetricgrpc.Option {
+	opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.ExporterURL)}
+	if cfg.Insecure {
+		opts = append(opts, otlpmetricgrpc.WithInsecure())
+	}
+	return opts
 }
