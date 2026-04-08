@@ -23,14 +23,12 @@ import (
 )
 
 type OTELConfig struct {
-	Enabled     bool
-	ServiceName string
-	ExporterURL string
-	// SampleRate controls the trace sampling ratio (0.0–1.0).
-	// The zero-value defaults to 1.0 (full sampling). To disable
-	// sampling entirely, set OTELConfig.Enabled = false instead.
-	SampleRate float64
-	Insecure   bool
+	Enabled         bool
+	ServiceName     string
+	ExporterURL     string
+	SampleRate      float64
+	Insecure        bool
+	ShutdownTimeout time.Duration
 }
 
 func (c OTELConfig) WithDefaults() OTELConfig {
@@ -43,6 +41,9 @@ func (c OTELConfig) WithDefaults() OTELConfig {
 	}
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 1.0
+	}
+	if cfg.ShutdownTimeout == 0 {
+		cfg.ShutdownTimeout = 5 * time.Second
 	}
 	return cfg
 }
@@ -103,9 +104,40 @@ func SetupOTEL(ctx context.Context, cfg OTELConfig) (func(context.Context) error
 	}, nil
 }
 
-func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
+func OTELTracingMiddleware(serviceName string) func(http.Handler) http.Handler {
 	tracer := otel.Tracer(serviceName)
 	propagator := otel.GetTextMapPropagator()
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+			spanName := r.Method + " " + r.URL.Path
+			ctx, span := tracer.Start(ctx, spanName,
+				trace.WithAttributes(
+					semconv.HTTPRequestMethodKey.String(r.Method),
+					semconv.URLPathKey.String(r.URL.Path),
+					semconv.ServerAddressKey.String(r.Host),
+				),
+				trace.WithSpanKind(trace.SpanKindServer),
+			)
+			defer span.End()
+
+			rw := getStatusRecorder(w)
+			r = r.WithContext(ctx)
+
+			next.ServeHTTP(rw, r)
+
+			statusCode := rw.status
+			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(statusCode))
+			if statusCode >= 500 {
+				span.SetStatus(codes.Error, "server error")
+			}
+		})
+	}
+}
+
+func OTELMetricsMiddleware(serviceName string) func(http.Handler) http.Handler {
 	meter := otel.Meter(serviceName)
 	duration, err := meter.Float64Histogram(
 		"http.server.request.duration",
@@ -125,39 +157,26 @@ func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-
-			spanName := r.Method + " " + r.URL.Path
-			ctx, span := tracer.Start(ctx, spanName,
-				trace.WithAttributes(
-					semconv.HTTPRequestMethodKey.String(r.Method),
-					semconv.URLPathKey.String(r.URL.Path),
-					semconv.ServerAddressKey.String(r.Host),
-				),
-				trace.WithSpanKind(trace.SpanKindServer),
-			)
-			defer span.End()
-
 			rw := getStatusRecorder(w)
 			start := time.Now()
-			r = r.WithContext(ctx)
 
 			next.ServeHTTP(rw, r)
 
 			statusCode := rw.status
-			span.SetAttributes(semconv.HTTPResponseStatusCodeKey.Int(statusCode))
-			if statusCode >= 500 {
-				span.SetStatus(codes.Error, "server error")
-			}
-
 			attrs := []attribute.KeyValue{
 				semconv.HTTPRequestMethodKey.String(r.Method),
 				semconv.URLPathKey.String(r.URL.Path),
 				semconv.HTTPResponseStatusCodeKey.Int(statusCode),
 			}
-			duration.Record(ctx, float64(time.Since(start).Milliseconds()), metric.WithAttributes(attrs...))
-			requestCount.Add(ctx, 1, metric.WithAttributes(attrs...))
+			duration.Record(r.Context(), float64(time.Since(start).Milliseconds()), metric.WithAttributes(attrs...))
+			requestCount.Add(r.Context(), 1, metric.WithAttributes(attrs...))
 		})
+	}
+}
+
+func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return OTELTracingMiddleware(serviceName)(OTELMetricsMiddleware(serviceName)(next))
 	}
 }
 
