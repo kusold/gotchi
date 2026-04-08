@@ -75,6 +75,10 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return m.Ping(AdminContext(ctx))
 }
 
+func (m *Manager) EnableOTELTracing() {
+	m.cfg.OTELTracing = true
+}
+
 func (m *Manager) Close() error {
 	if m.pool != nil {
 		m.pool.Close()

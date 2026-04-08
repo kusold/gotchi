@@ -55,17 +55,20 @@ func TestOTELConfig_WithDefaults(t *testing.T) {
 		assert.Equal(t, "gotchi", cfg.ServiceName)
 		assert.Equal(t, "localhost:4317", cfg.ExporterURL)
 		assert.Equal(t, 1.0, cfg.SampleRate)
+		assert.Equal(t, 5*time.Second, cfg.ShutdownTimeout)
 	})
 
 	t.Run("preserves provided values", func(t *testing.T) {
 		cfg := OTELConfig{
-			ServiceName: "my-service",
-			ExporterURL: "collector:4317",
-			SampleRate:  0.5,
+			ServiceName:     "my-service",
+			ExporterURL:     "collector:4317",
+			SampleRate:      0.5,
+			ShutdownTimeout: 10 * time.Second,
 		}.WithDefaults()
 		assert.Equal(t, "my-service", cfg.ServiceName)
 		assert.Equal(t, "collector:4317", cfg.ExporterURL)
 		assert.Equal(t, 0.5, cfg.SampleRate)
+		assert.Equal(t, 10*time.Second, cfg.ShutdownTimeout)
 	})
 
 	t.Run("preserves enabled flag", func(t *testing.T) {
@@ -169,14 +172,14 @@ func TestSetupOTEL_UnreachableEndpoint(t *testing.T) {
 	assert.Error(t, shutdownErr, "shutdown with unreachable endpoint should return error")
 }
 
-func TestTracingMiddleware_CreatesSpan(t *testing.T) {
+func TestOTELTracingMiddleware_CreatesSpan(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELMiddleware("test-service")(handler)
+	middleware := OTELTracingMiddleware("test-service")(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	rec := httptest.NewRecorder()
@@ -188,7 +191,7 @@ func TestTracingMiddleware_CreatesSpan(t *testing.T) {
 	assert.Equal(t, "test-service", spans[0].InstrumentationScope().Name)
 }
 
-func TestTracingMiddleware_RecordsStatusCode(t *testing.T) {
+func TestOTELTracingMiddleware_RecordsStatusCode(t *testing.T) {
 	spanRecorder := setupTracerProvider(t)
 
 	tests := []struct {
@@ -209,7 +212,7 @@ func TestTracingMiddleware_RecordsStatusCode(t *testing.T) {
 				w.WriteHeader(tt.statusCode)
 			})
 
-			middleware := OTELMiddleware("test-service")(handler)
+			middleware := OTELTracingMiddleware("test-service")(handler)
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			middleware.ServeHTTP(rec, req)
@@ -221,7 +224,7 @@ func TestTracingMiddleware_RecordsStatusCode(t *testing.T) {
 	}
 }
 
-func TestTracingMiddleware_PropagatesContext(t *testing.T) {
+func TestOTELTracingMiddleware_PropagatesContext(t *testing.T) {
 	setupTracerProvider(t)
 
 	var capturedCtx context.Context
@@ -230,7 +233,7 @@ func TestTracingMiddleware_PropagatesContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELMiddleware("test-service")(handler)
+	middleware := OTELTracingMiddleware("test-service")(handler)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
@@ -238,7 +241,7 @@ func TestTracingMiddleware_PropagatesContext(t *testing.T) {
 	assert.NotNil(t, capturedCtx)
 }
 
-func TestOTELMiddleware_DurationHistogramAttributes(t *testing.T) {
+func TestOTELMetricsMiddleware_DurationHistogramAttributes(t *testing.T) {
 	setupTracerProvider(t)
 	reader := setupMeterProvider(t)
 
@@ -247,7 +250,7 @@ func TestOTELMiddleware_DurationHistogramAttributes(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	})
 
-	middleware := OTELMiddleware("test-service")(handler)
+	middleware := OTELMetricsMiddleware("test-service")(handler)
 	req := httptest.NewRequest(http.MethodPost, "/api/users", nil)
 	rec := httptest.NewRecorder()
 	middleware.ServeHTTP(rec, req)
@@ -280,7 +283,7 @@ func TestOTELMiddleware_DurationHistogramAttributes(t *testing.T) {
 	assert.True(t, histogramFound, "expected http.server.request.duration histogram")
 }
 
-func TestOTELMiddleware_RequestCounterIncrements(t *testing.T) {
+func TestOTELMetricsMiddleware_RequestCounterIncrements(t *testing.T) {
 	setupTracerProvider(t)
 	reader := setupMeterProvider(t)
 
@@ -290,7 +293,7 @@ func TestOTELMiddleware_RequestCounterIncrements(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := OTELMiddleware("test-service")(handler)
+	middleware := OTELMetricsMiddleware("test-service")(handler)
 
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -326,7 +329,7 @@ func TestOTELMiddleware_RequestCounterIncrements(t *testing.T) {
 	assert.True(t, counterFound, "expected http.server.request.count counter")
 }
 
-func TestOTELMiddleware_MetricsDistinctAttributesPerStatus(t *testing.T) {
+func TestOTELMetricsMiddleware_DistinctAttributesPerStatus(t *testing.T) {
 	setupTracerProvider(t)
 	reader := setupMeterProvider(t)
 
@@ -339,7 +342,7 @@ func TestOTELMiddleware_MetricsDistinctAttributesPerStatus(t *testing.T) {
 		}
 	})
 
-	middleware := OTELMiddleware("test-service")(handler)
+	middleware := OTELMetricsMiddleware("test-service")(handler)
 
 	for _, status := range []string{"200", "500", "200"} {
 		req := httptest.NewRequest(http.MethodGet, "/test?status="+status, nil)
@@ -369,6 +372,41 @@ func TestOTELMiddleware_MetricsDistinctAttributesPerStatus(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestOTELMiddleware_CombinesTracingAndMetrics(t *testing.T) {
+	spanRecorder := setupTracerProvider(t)
+	reader := setupMeterProvider(t)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := OTELMiddleware("test-service")(handler)
+	req := httptest.NewRequest(http.MethodGet, "/combined", nil)
+	rec := httptest.NewRecorder()
+	middleware.ServeHTTP(rec, req)
+
+	spans := spanRecorder.Ended()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "GET /combined", spans[0].Name())
+
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+	require.Len(t, rm.ScopeMetrics, 1)
+
+	var foundCounter, foundHistogram bool
+	for _, m := range rm.ScopeMetrics[0].Metrics {
+		if m.Name == "http.server.request.count" {
+			foundCounter = true
+		}
+		if m.Name == "http.server.request.duration" {
+			foundHistogram = true
+		}
+	}
+	assert.True(t, foundCounter, "combined middleware should record counter")
+	assert.True(t, foundHistogram, "combined middleware should record histogram")
 }
 
 func TestOTELMiddleware_CapturesStatusCodes(t *testing.T) {
