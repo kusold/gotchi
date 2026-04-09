@@ -17,7 +17,7 @@ func TestBuilderDefaults(t *testing.T) {
 	t.Run("sets default port when not provided", func(t *testing.T) {
 		app, err := New(WithDatabase("postgres://example"))
 		require.NoError(t, err)
-		assert.Equal(t, "3000", app.port)
+		assert.Equal(t, "3000", app.config.port)
 	})
 
 	t.Run("preserves provided port", func(t *testing.T) {
@@ -26,14 +26,14 @@ func TestBuilderDefaults(t *testing.T) {
 			WithPort("8080"),
 		)
 		require.NoError(t, err)
-		assert.Equal(t, "8080", app.port)
+		assert.Equal(t, "8080", app.config.port)
 	})
 
 	t.Run("sets default clock and logger", func(t *testing.T) {
 		app, err := New(testOpts()...)
 		require.NoError(t, err)
-		assert.NotNil(t, app.clock)
-		assert.NotNil(t, app.logger)
+		assert.NotNil(t, app.config.clock)
+		assert.NotNil(t, app.config.logger)
 	})
 }
 
@@ -98,8 +98,8 @@ func TestWithDatabaseConfig(t *testing.T) {
 		}
 		app, err := New(testOptsWithDBConfig(cfg)...)
 		require.NoError(t, err)
-		assert.Equal(t, "postgres://example", app.dbConfig.DatabaseURL)
-		assert.True(t, app.dbConfig.EnableSlogTracing)
+		assert.Equal(t, "postgres://example", app.config.dbConfig.DatabaseURL)
+		assert.True(t, app.config.dbConfig.EnableSlogTracing)
 	})
 }
 
@@ -109,37 +109,60 @@ func TestWithMigrations(t *testing.T) {
 		opts := append(testOpts(), WithMigrations(source))
 		app, err := New(opts...)
 		require.NoError(t, err)
-		assert.Len(t, app.migrationSources, 1)
-		assert.Equal(t, source, app.migrationSources[0])
+		assert.Len(t, app.config.migrationSources, 1)
+		assert.Equal(t, source, app.config.migrationSources[0])
 	})
 
 	t.Run("enables core migrations", func(t *testing.T) {
 		opts := append(testOpts(), WithCoreMigrations())
 		app, err := New(opts...)
 		require.NoError(t, err)
-		assert.True(t, app.enableCoreMigrations)
+		assert.True(t, app.config.enableCoreMigrations)
 	})
 
 	t.Run("enables auth migrations", func(t *testing.T) {
 		opts := append(testOpts(), WithAuthMigrations())
 		app, err := New(opts...)
 		require.NoError(t, err)
-		assert.True(t, app.enableAuthMigrations)
+		assert.True(t, app.config.enableAuthMigrations)
 	})
 }
 
 func TestWithCORS(t *testing.T) {
-	t.Run("stores allowed origins", func(t *testing.T) {
+	t.Run("stores allowed origins with defaults", func(t *testing.T) {
 		opts := append(testOpts(), WithCORS("https://example.com", "https://other.com"))
 		app, err := New(opts...)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"https://example.com", "https://other.com"}, app.corsOrigins)
+		require.NotNil(t, app.config.corsConfig)
+		assert.Equal(t, []string{"https://example.com", "https://other.com"}, app.config.corsConfig.AllowedOrigins)
+		assert.True(t, app.config.corsConfig.AllowCredentials)
+		assert.Equal(t, 300, app.config.corsConfig.MaxAge)
 	})
 
 	t.Run("no CORS when not configured", func(t *testing.T) {
 		app, err := New(testOpts()...)
 		require.NoError(t, err)
-		assert.Nil(t, app.corsOrigins)
+		assert.Nil(t, app.config.corsConfig)
+	})
+}
+
+func TestWithCORSConfig(t *testing.T) {
+	t.Run("allows full CORS control", func(t *testing.T) {
+		cfg := CORSConfig{
+			AllowedOrigins:   []string{"https://custom.com"},
+			AllowedMethods:   []string{"GET"},
+			AllowedHeaders:   []string{"X-Custom"},
+			AllowCredentials: false,
+			MaxAge:           600,
+		}
+		opts := append(testOpts(), WithCORSConfig(cfg))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		require.NotNil(t, app.config.corsConfig)
+		assert.Equal(t, []string{"GET"}, app.config.corsConfig.AllowedMethods)
+		assert.Equal(t, []string{"X-Custom"}, app.config.corsConfig.AllowedHeaders)
+		assert.False(t, app.config.corsConfig.AllowCredentials)
+		assert.Equal(t, 600, app.config.corsConfig.MaxAge)
 	})
 }
 
@@ -154,9 +177,33 @@ func TestWithAuth(t *testing.T) {
 		opts := append(testOpts(), WithAuth(oidcCfg))
 		app, err := New(opts...)
 		require.NoError(t, err)
-		assert.NotNil(t, app.authConfig)
-		assert.True(t, app.authConfig.Enabled)
-		assert.NotNil(t, app.sessionConfig, "sessions should be auto-enabled")
+		assert.NotNil(t, app.config.authConfig)
+		assert.NotNil(t, app.config.sessionConfig, "sessions should be auto-enabled")
+	})
+
+	t.Run("does not mutate the Enabled field on the stored config", func(t *testing.T) {
+		oidcCfg := auth.Config{
+			IssuerURL:    "http://issuer",
+			ClientID:     "client",
+			ClientSecret: "secret",
+			RedirectURL:  "http://localhost/callback",
+			Enabled:      false,
+		}
+		opts := append(testOpts(), WithAuth(oidcCfg))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		// WithAuth does not set Enabled; Run() sets it at startup time.
+		assert.False(t, app.config.authConfig.Enabled)
+	})
+}
+
+func TestWithOTEL(t *testing.T) {
+	t.Run("does not mutate the Enabled field on the stored config", func(t *testing.T) {
+		opts := append(testOpts(), WithOTEL(observabilityConfig()))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		// WithOTEL does not set Enabled; Run() sets it at startup time.
+		assert.False(t, app.config.otelConfig.Enabled)
 	})
 }
 
@@ -164,7 +211,7 @@ func TestWithNoDefaultMiddleware(t *testing.T) {
 	opts := append(testOpts(), WithNoDefaultMiddleware())
 	app, err := New(opts...)
 	require.NoError(t, err)
-	assert.True(t, app.disableDefaultMiddleware)
+	assert.True(t, app.config.disableDefaultMiddleware)
 }
 
 func TestDefaultLoginHandler(t *testing.T) {

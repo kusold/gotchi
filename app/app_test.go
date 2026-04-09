@@ -43,13 +43,13 @@ func TestNewRespectsDatabaseTracingSetting(t *testing.T) {
 		opts := testOptsWithDBConfig(dbConfigWithTracing(true))
 		withTracing, err := New(opts...)
 		require.NoError(t, err)
-		assert.True(t, withTracing.dbConfig.EnableSlogTracing)
+		assert.True(t, withTracing.config.dbConfig.EnableSlogTracing)
 	})
 
 	t.Run("tracing disabled", func(t *testing.T) {
 		opts := testOptsWithDBConfig(dbConfigWithTracing(false))
 		withoutTracing, err := New(opts...)
 		require.NoError(t, err)
-		assert.False(t, withoutTracing.dbConfig.EnableSlogTracing)
+		assert.False(t, withoutTracing.config.dbConfig.EnableSlogTracing)
 	})
 }

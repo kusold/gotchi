@@ -59,24 +59,7 @@ type Dependencies struct {
 // Application is the main entry point. Construct one with New and
 // start it with Run.
 type Application struct {
-	// resolved configuration from builder
-	port                     string
-	dbConfig                 db.Config
-	sessionConfig            *session.Config
-	authConfig               *auth.Config
-	identityStore            auth.IdentityStore
-	loginHandler             http.HandlerFunc
-	otelConfig               *observability.OTELConfig
-	corsOrigins              []string
-	openAPIConfig            openapi.Config
-	migrationSources         []db.MigrationSource
-	enableCoreMigrations     bool
-	enableAuthMigrations     bool
-	middleware               []func(http.Handler) http.Handler
-	disableDefaultMiddleware bool
-	modules                  []Module
-	clock                    Clock
-	logger                   *slog.Logger
+	config builder
 
 	// runtime state
 	router       *chi.Mux
@@ -104,30 +87,8 @@ func New(opts ...Option) (*Application, error) {
 
 	database := db.NewManager(*b.dbConfig)
 
-	var oaCfg openapi.Config
-	if b.openAPIConfig != nil {
-		oaCfg = *b.openAPIConfig
-	}
-
 	a := &Application{
-		port:                     b.port,
-		dbConfig:                 *b.dbConfig,
-		sessionConfig:            b.sessionConfig,
-		authConfig:               b.authConfig,
-		identityStore:            b.identityStore,
-		loginHandler:             b.loginHandler,
-		otelConfig:               b.otelConfig,
-		corsOrigins:              b.corsOrigins,
-		openAPIConfig:            oaCfg,
-		migrationSources:         b.migrationSources,
-		enableCoreMigrations:     b.enableCoreMigrations,
-		enableAuthMigrations:     b.enableAuthMigrations,
-		middleware:               b.middleware,
-		disableDefaultMiddleware: b.disableDefaultMiddleware,
-		modules:                  b.modules,
-		clock:                    b.clock,
-		logger:                   b.logger,
-
+		config: *b,
 		router: chi.NewRouter(),
 		db:     database,
 	}
@@ -149,14 +110,18 @@ func (a *Application) Dependencies() Dependencies {
 // Run initializes all configured subsystems and starts the HTTP server.
 // It blocks until the server exits or ctx is cancelled.
 func (a *Application) Run(ctx context.Context) error {
+	cfg := &a.config
+
 	// --- OTEL ---
-	if a.otelConfig != nil {
-		shutdown, err := observability.SetupOTEL(ctx, *a.otelConfig)
+	if cfg.otelConfig != nil {
+		otelCfg := *cfg.otelConfig
+		otelCfg.Enabled = true
+		shutdown, err := observability.SetupOTEL(ctx, otelCfg)
 		if err != nil {
 			return fmt.Errorf("setting up OTEL: %w", err)
 		}
 		a.otelShutdown = shutdown
-		if a.otelConfig.TracingEnabled() {
+		if otelCfg.TracingEnabled() {
 			a.db.EnableOTELTracing()
 		}
 	}
@@ -167,13 +132,13 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 
 	// --- Migrations ---
-	if a.enableCoreMigrations {
+	if cfg.enableCoreMigrations {
 		a.db.AddMigrationSource(db.MigrationSource{FS: migrations.Core(), Dir: "."})
 	}
-	if a.enableAuthMigrations {
+	if cfg.enableAuthMigrations {
 		a.db.AddMigrationSource(db.MigrationSource{FS: migrations.Auth(), Dir: "."})
 	}
-	for _, source := range a.migrationSources {
+	for _, source := range cfg.migrationSources {
 		a.db.AddMigrationSource(source)
 	}
 	if err := a.db.RunMigrations(ctx); err != nil {
@@ -182,14 +147,14 @@ func (a *Application) Run(ctx context.Context) error {
 
 	// --- Sessions ---
 	var sessionManager *session.Manager
-	if a.sessionConfig != nil {
-		sessionManager = session.NewPostgres(*a.sessionConfig, a.db.Pool(), "sessions")
+	if cfg.sessionConfig != nil {
+		sessionManager = session.NewPostgres(*cfg.sessionConfig, a.db.Pool(), "sessions")
 		session.RegisterGobTypes(auth.SessionClaims{})
 	}
 
 	// --- Identity Store ---
-	identityStore := a.identityStore
-	if a.authConfig != nil && identityStore == nil {
+	identityStore := cfg.identityStore
+	if cfg.authConfig != nil && identityStore == nil {
 		var err error
 		identityStore, err = auth.NewPostgresIdentityStore(a.db.Pool(), auth.PostgresStoreConfig{})
 		if err != nil {
@@ -199,8 +164,10 @@ func (a *Application) Run(ctx context.Context) error {
 
 	// --- OIDC Handler ---
 	var oidcHandler *auth.OIDCHandler
-	if a.authConfig != nil {
-		handler, err := auth.NewOIDCHandler(*a.authConfig, sessionManager, identityStore)
+	if cfg.authConfig != nil {
+		authCfg := *cfg.authConfig
+		authCfg.Enabled = true
+		handler, err := auth.NewOIDCHandler(authCfg, sessionManager, identityStore)
 		if err != nil {
 			return err
 		}
@@ -208,60 +175,30 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 
 	// --- Dependencies ---
+	var oaCfg openapi.Config
+	if cfg.openAPIConfig != nil {
+		oaCfg = *cfg.openAPIConfig
+	}
+
 	a.dependencies = Dependencies{
 		DB:            a.db,
 		Pool:          a.db.Pool(),
 		Session:       sessionManager,
 		Auth:          oidcHandler,
 		IdentityStore: identityStore,
-		OpenAPI:       a.openAPIConfig,
-		Logger:        a.logger,
-		Clock:         a.clock,
+		OpenAPI:       oaCfg,
+		Logger:        cfg.logger,
+		Clock:         cfg.clock,
 	}
 
 	// --- Middleware ---
-	if !a.disableDefaultMiddleware {
-		a.router.Use(chiMiddleware.RealIP)
-		a.router.Use(chiMiddleware.Logger)
-		a.router.Use(chiMiddleware.Recoverer)
-	}
-
-	if len(a.corsOrigins) > 0 {
-		a.router.Use(cors.Handler(cors.Options{
-			AllowedOrigins:   a.corsOrigins,
-			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
-			ExposedHeaders:   []string{"Link", "X-Request-ID"},
-			AllowCredentials: true,
-			MaxAge:           300,
-		}))
-	}
-
-	if a.otelConfig != nil && a.otelConfig.TracingEnabled() {
-		a.router.Use(observability.OTELTracingMiddleware(a.otelConfig.ServiceName))
-	}
-	if a.otelConfig != nil && a.otelConfig.MetricsEnabled() {
-		a.router.Use(observability.OTELMetricsMiddleware(a.otelConfig.ServiceName))
-	}
-
-	if sessionManager != nil {
-		a.router.Use(sessionManager.LoadAndSave)
-		sessionKey := auth.DefaultSessionKey
-		if a.authConfig != nil && a.authConfig.SessionKey != "" {
-			sessionKey = a.authConfig.SessionKey
-		}
-		a.router.Use(observability.CorrelationAndAudit(sessionManager, sessionKey))
-	}
-
-	for _, mw := range a.middleware {
-		a.router.Use(mw)
-	}
+	a.setupMiddleware(sessionManager)
 
 	// --- Auth routes ---
 	if oidcHandler != nil {
 		a.router.Route("/auth", func(r chi.Router) {
-			if a.loginHandler != nil {
-				r.Get("/login", a.loginHandler)
+			if cfg.loginHandler != nil {
+				r.Get("/login", cfg.loginHandler)
 			} else {
 				r.Get("/login", defaultLoginHandler)
 			}
@@ -270,13 +207,53 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 
 	// --- Modules ---
-	for _, module := range a.modules {
+	for _, module := range cfg.modules {
 		if err := module.Register(a.router, a.dependencies); err != nil {
 			return err
 		}
 	}
 
-	return http.ListenAndServe(fmt.Sprintf(":%s", a.port), a.router)
+	return http.ListenAndServe(fmt.Sprintf(":%s", cfg.port), a.router)
+}
+
+// setupMiddleware applies all configured middleware to the router.
+// It is called by Run after services are initialized. Extracted for testability.
+func (a *Application) setupMiddleware(sessionManager *session.Manager) {
+	cfg := &a.config
+
+	if !cfg.disableDefaultMiddleware {
+		a.router.Use(chiMiddleware.RealIP)
+		a.router.Use(chiMiddleware.Logger)
+		a.router.Use(chiMiddleware.Recoverer)
+	}
+
+	if cfg.corsConfig != nil {
+		a.router.Use(cors.Handler(cfg.corsConfig.toChiOptions()))
+	}
+
+	if cfg.otelConfig != nil {
+		otelCfg := *cfg.otelConfig
+		otelCfg.Enabled = true
+		if otelCfg.TracingEnabled() {
+			a.router.Use(observability.OTELTracingMiddleware(otelCfg.ServiceName))
+		}
+		if otelCfg.MetricsEnabled() {
+			a.router.Use(observability.OTELMetricsMiddleware(otelCfg.ServiceName))
+		}
+	}
+
+	if sessionManager != nil {
+		a.router.Use(sessionManager.LoadAndSave)
+		sessionKey := auth.DefaultSessionKey
+		if cfg.authConfig != nil && cfg.authConfig.SessionKey != "" {
+			sessionKey = cfg.authConfig.SessionKey
+		}
+		a.router.Use(observability.CorrelationAndAudit(sessionManager, sessionKey))
+	}
+
+	for _, mw := range cfg.middleware {
+		a.router.Use(mw)
+	}
 }
 
 // Close performs graceful shutdown of the application's resources.
@@ -287,8 +264,9 @@ func (a *Application) Close() error {
 	}
 	if a.otelShutdown != nil {
 		timeout := 5 * time.Second
-		if a.otelConfig != nil {
-			timeout = a.otelConfig.WithDefaults().ShutdownTimeout
+		if a.config.otelConfig != nil {
+			otelCfg := a.config.otelConfig.WithDefaults()
+			timeout = otelCfg.ShutdownTimeout
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
