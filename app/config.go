@@ -19,6 +19,11 @@ type Config struct {
 	OpenAPI    openapi.Config
 	Migrations MigrationConfig
 	OTEL       observability.OTELConfig
+	CORS       CORSConfig
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string
 }
 
 type ServerConfig struct {

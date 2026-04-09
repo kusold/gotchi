@@ -58,12 +58,20 @@ func TestConfigWithDefaults(t *testing.T) {
 		cfg.Server.Port = "9000"
 		cfg.Database.EnableSlogTracing = true
 		cfg.Migrations = MigrationConfig{EnableCore: true, EnableAuth: true}
+		cfg.CORS = CORSConfig{AllowedOrigins: []string{"https://example.com"}}
 		withDefaults := cfg.withDefaults()
 		assert.Equal(t, "9000", withDefaults.Server.Port)
 		assert.Equal(t, "postgres://example", withDefaults.Database.DatabaseURL)
 		assert.True(t, withDefaults.Database.EnableSlogTracing)
 		assert.True(t, withDefaults.Migrations.EnableCore)
 		assert.True(t, withDefaults.Migrations.EnableAuth)
+		assert.Equal(t, []string{"https://example.com"}, withDefaults.CORS.AllowedOrigins)
+	})
+
+	t.Run("preserves empty CORS config when not provided", func(t *testing.T) {
+		cfg := testConfig()
+		withDefaults := cfg.withDefaults()
+		assert.Nil(t, withDefaults.CORS.AllowedOrigins)
 	})
 }
 
