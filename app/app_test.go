@@ -4,26 +4,29 @@ import (
 	"testing"
 
 	"github.com/kusold/gotchi/auth"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewRequiresDatabaseURL(t *testing.T) {
-	_, err := New(Config{Server: ServerConfig{Port: "3000"}})
+	_, err := New(WithPort("3000"))
 	if err == nil {
-		t.Fatalf("expected error for missing database URL")
+		t.Fatalf("expected error for missing database")
 	}
 }
 
 func TestNewRequiresOIDCFieldsWhenEnabled(t *testing.T) {
-	cfg := testConfig()
-	cfg.Auth = AuthConfig{OIDC: auth.Config{Enabled: true}}
-	_, err := New(cfg)
+	_, err := New(
+		WithDatabase("postgres://example"),
+		WithAuth(auth.Config{}),
+	)
 	if err == nil {
 		t.Fatalf("expected error for missing OIDC fields")
 	}
 }
 
 func TestNewSuccess(t *testing.T) {
-	app, err := New(testConfig())
+	app, err := New(testOpts()...)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,26 +40,16 @@ func TestNewSuccess(t *testing.T) {
 
 func TestNewRespectsDatabaseTracingSetting(t *testing.T) {
 	t.Run("tracing enabled", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Database.EnableSlogTracing = true
-		withTracing, err := New(cfg)
-		if err != nil {
-			t.Fatalf("unexpected error with tracing enabled: %v", err)
-		}
-		if !withTracing.cfg.Database.EnableSlogTracing {
-			t.Fatalf("expected database tracing to remain enabled")
-		}
+		opts := testOptsWithDBConfig(dbConfigWithTracing(true))
+		withTracing, err := New(opts...)
+		require.NoError(t, err)
+		assert.True(t, withTracing.dbConfig.EnableSlogTracing)
 	})
 
 	t.Run("tracing disabled", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Database.EnableSlogTracing = false
-		withoutTracing, err := New(cfg)
-		if err != nil {
-			t.Fatalf("unexpected error with tracing disabled: %v", err)
-		}
-		if withoutTracing.cfg.Database.EnableSlogTracing {
-			t.Fatalf("expected database tracing to remain disabled")
-		}
+		opts := testOptsWithDBConfig(dbConfigWithTracing(false))
+		withoutTracing, err := New(opts...)
+		require.NoError(t, err)
+		assert.False(t, withoutTracing.dbConfig.EnableSlogTracing)
 	})
 }

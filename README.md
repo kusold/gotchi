@@ -16,7 +16,15 @@ module github.com/kusold/gotchi
 
 ## Bootstrap
 
-Use `app.New(...)` to construct and run an application with minimal wiring.
+Use functional options to construct and run an application with minimal wiring:
+
+```go
+application, err := app.New(
+    app.WithDatabase(os.Getenv("DATABASE_URL")),
+    app.WithCoreMigrations(),
+    app.WithModule(myModule),
+)
+```
 
 ## CLI
 

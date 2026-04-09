@@ -5,10 +5,24 @@ import (
 	"github.com/kusold/gotchi/db"
 )
 
-func testConfig() Config {
-	return Config{
-		Server:   ServerConfig{Port: "3000"},
-		Database: db.Config{DatabaseURL: "postgres://example"},
+func testOpts() []Option {
+	return []Option{
+		WithDatabase("postgres://example"),
+		WithPort("3000"),
+	}
+}
+
+func testOptsWithDBConfig(cfg db.Config) []Option {
+	return []Option{
+		WithDatabaseConfig(cfg),
+		WithPort("3000"),
+	}
+}
+
+func dbConfigWithTracing(enabled bool) db.Config {
+	return db.Config{
+		DatabaseURL:       "postgres://example",
+		EnableSlogTracing: enabled,
 	}
 }
 

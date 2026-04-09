@@ -13,81 +13,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestConfigWithDefaults(t *testing.T) {
-	t.Run("sets default port when empty", func(t *testing.T) {
-		cfg := Config{
-			Database: db.Config{DatabaseURL: "postgres://example"},
-		}
-		withDefaults := cfg.withDefaults()
-		assert.Equal(t, "3000", withDefaults.Server.Port)
+func TestBuilderDefaults(t *testing.T) {
+	t.Run("sets default port when not provided", func(t *testing.T) {
+		app, err := New(WithDatabase("postgres://example"))
+		require.NoError(t, err)
+		assert.Equal(t, "3000", app.port)
 	})
 
 	t.Run("preserves provided port", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Server.Port = "8080"
-		withDefaults := cfg.withDefaults()
-		assert.Equal(t, "8080", withDefaults.Server.Port)
+		app, err := New(
+			WithDatabase("postgres://example"),
+			WithPort("8080"),
+		)
+		require.NoError(t, err)
+		assert.Equal(t, "8080", app.port)
 	})
 
-	t.Run("sets default OIDC config when enabled", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Auth = AuthConfig{OIDC: auth.Config{Enabled: true}}
-		withDefaults := cfg.withDefaults()
-		assert.True(t, withDefaults.Auth.OIDC.Enabled)
-	})
-
-	t.Run("initializes empty migration sources when nil", func(t *testing.T) {
-		cfg := Config{
-			Database: db.Config{DatabaseURL: "postgres://example"},
-		}
-		withDefaults := cfg.withDefaults()
-		assert.NotNil(t, withDefaults.Migrations.Sources)
-		assert.Empty(t, withDefaults.Migrations.Sources)
-	})
-
-	t.Run("preserves provided migration sources", func(t *testing.T) {
-		sources := []db.MigrationSource{{FS: fstest.MapFS{}, Dir: "migrations"}}
-		cfg := testConfig()
-		cfg.Migrations = MigrationConfig{Sources: sources}
-		withDefaults := cfg.withDefaults()
-		assert.Equal(t, sources, withDefaults.Migrations.Sources)
-	})
-
-	t.Run("preserves all provided values", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.Server.Port = "9000"
-		cfg.Database.EnableSlogTracing = true
-		cfg.Migrations = MigrationConfig{EnableCore: true, EnableAuth: true}
-		cfg.CORS = CORSConfig{AllowedOrigins: []string{"https://example.com"}}
-		withDefaults := cfg.withDefaults()
-		assert.Equal(t, "9000", withDefaults.Server.Port)
-		assert.Equal(t, "postgres://example", withDefaults.Database.DatabaseURL)
-		assert.True(t, withDefaults.Database.EnableSlogTracing)
-		assert.True(t, withDefaults.Migrations.EnableCore)
-		assert.True(t, withDefaults.Migrations.EnableAuth)
-		assert.Equal(t, []string{"https://example.com"}, withDefaults.CORS.AllowedOrigins)
-	})
-
-	t.Run("preserves empty CORS config when not provided", func(t *testing.T) {
-		cfg := testConfig()
-		withDefaults := cfg.withDefaults()
-		assert.Nil(t, withDefaults.CORS.AllowedOrigins)
+	t.Run("sets default clock and logger", func(t *testing.T) {
+		app, err := New(testOpts()...)
+		require.NoError(t, err)
+		assert.NotNil(t, app.clock)
+		assert.NotNil(t, app.logger)
 	})
 }
 
-func TestConfigValidate(t *testing.T) {
-	t.Run("returns error when database URL is missing", func(t *testing.T) {
-		cfg := Config{Server: ServerConfig{Port: "3000"}}
-		err := cfg.validate()
+func TestBuilderValidation(t *testing.T) {
+	t.Run("returns error when database is missing", func(t *testing.T) {
+		_, err := New(WithPort("3000"))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "database URL is required")
+		assert.Contains(t, err.Error(), "database is required")
 	})
 
-	t.Run("returns error when port is missing", func(t *testing.T) {
-		cfg := Config{Database: db.Config{DatabaseURL: "postgres://example"}}
-		err := cfg.validate()
+	t.Run("returns error when database URL is empty", func(t *testing.T) {
+		_, err := New(WithDatabaseConfig(db.Config{}))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "server port is required")
+		assert.Contains(t, err.Error(), "database URL is required")
 	})
 
 	t.Run("returns error when OIDC enabled with missing fields", func(t *testing.T) {
@@ -97,37 +57,114 @@ func TestConfigValidate(t *testing.T) {
 		}{
 			{
 				"missing issuer URL",
-				auth.Config{Enabled: true, ClientID: "client", ClientSecret: "secret", RedirectURL: "http://localhost/callback"},
+				auth.Config{ClientID: "client", ClientSecret: "secret", RedirectURL: "http://localhost/callback"},
 			},
 			{
 				"missing client ID",
-				auth.Config{Enabled: true, IssuerURL: "http://issuer", ClientSecret: "secret", RedirectURL: "http://localhost/callback"},
+				auth.Config{IssuerURL: "http://issuer", ClientSecret: "secret", RedirectURL: "http://localhost/callback"},
 			},
 			{
 				"missing client secret",
-				auth.Config{Enabled: true, IssuerURL: "http://issuer", ClientID: "client", RedirectURL: "http://localhost/callback"},
+				auth.Config{IssuerURL: "http://issuer", ClientID: "client", RedirectURL: "http://localhost/callback"},
 			},
 			{
 				"missing redirect URL",
-				auth.Config{Enabled: true, IssuerURL: "http://issuer", ClientID: "client", ClientSecret: "secret"},
+				auth.Config{IssuerURL: "http://issuer", ClientID: "client", ClientSecret: "secret"},
 			},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				cfg := testConfig()
-				cfg.Auth = AuthConfig{OIDC: tt.oidc}
-				err := cfg.validate()
+				_, err := New(
+					WithDatabase("postgres://example"),
+					WithAuth(tt.oidc),
+				)
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "OIDC issuer/client credentials/redirect URL are required")
 			})
 		}
 	})
 
-	t.Run("succeeds with valid config without OIDC", func(t *testing.T) {
-		cfg := testConfig()
-		err := cfg.validate()
+	t.Run("succeeds without auth", func(t *testing.T) {
+		_, err := New(testOpts()...)
 		assert.NoError(t, err)
 	})
+}
+
+func TestWithDatabaseConfig(t *testing.T) {
+	t.Run("preserves all database config fields", func(t *testing.T) {
+		cfg := db.Config{
+			DatabaseURL:       "postgres://example",
+			EnableSlogTracing: true,
+		}
+		app, err := New(testOptsWithDBConfig(cfg)...)
+		require.NoError(t, err)
+		assert.Equal(t, "postgres://example", app.dbConfig.DatabaseURL)
+		assert.True(t, app.dbConfig.EnableSlogTracing)
+	})
+}
+
+func TestWithMigrations(t *testing.T) {
+	t.Run("adds custom migration sources", func(t *testing.T) {
+		source := db.MigrationSource{FS: fstest.MapFS{}, Dir: "migrations"}
+		opts := append(testOpts(), WithMigrations(source))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		assert.Len(t, app.migrationSources, 1)
+		assert.Equal(t, source, app.migrationSources[0])
+	})
+
+	t.Run("enables core migrations", func(t *testing.T) {
+		opts := append(testOpts(), WithCoreMigrations())
+		app, err := New(opts...)
+		require.NoError(t, err)
+		assert.True(t, app.enableCoreMigrations)
+	})
+
+	t.Run("enables auth migrations", func(t *testing.T) {
+		opts := append(testOpts(), WithAuthMigrations())
+		app, err := New(opts...)
+		require.NoError(t, err)
+		assert.True(t, app.enableAuthMigrations)
+	})
+}
+
+func TestWithCORS(t *testing.T) {
+	t.Run("stores allowed origins", func(t *testing.T) {
+		opts := append(testOpts(), WithCORS("https://example.com", "https://other.com"))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"https://example.com", "https://other.com"}, app.corsOrigins)
+	})
+
+	t.Run("no CORS when not configured", func(t *testing.T) {
+		app, err := New(testOpts()...)
+		require.NoError(t, err)
+		assert.Nil(t, app.corsOrigins)
+	})
+}
+
+func TestWithAuth(t *testing.T) {
+	t.Run("auto-enables sessions when auth is configured", func(t *testing.T) {
+		oidcCfg := auth.Config{
+			IssuerURL:    "http://issuer",
+			ClientID:     "client",
+			ClientSecret: "secret",
+			RedirectURL:  "http://localhost/callback",
+		}
+		opts := append(testOpts(), WithAuth(oidcCfg))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		assert.NotNil(t, app.authConfig)
+		assert.True(t, app.authConfig.Enabled)
+		assert.NotNil(t, app.sessionConfig, "sessions should be auto-enabled")
+	})
+}
+
+func TestWithNoDefaultMiddleware(t *testing.T) {
+	opts := append(testOpts(), WithNoDefaultMiddleware())
+	app, err := New(opts...)
+	require.NoError(t, err)
+	assert.True(t, app.disableDefaultMiddleware)
 }
 
 func TestDefaultLoginHandler(t *testing.T) {
