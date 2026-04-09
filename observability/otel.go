@@ -217,12 +217,6 @@ func OTELMetricsMiddleware(serviceName string) func(http.Handler) http.Handler {
 	}
 }
 
-func OTELMiddleware(serviceName string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return OTELTracingMiddleware(serviceName)(OTELMetricsMiddleware(serviceName)(next))
-	}
-}
-
 func getStatusRecorder(w http.ResponseWriter) *statusRecorder {
 	if existing, ok := w.(*statusRecorder); ok {
 		return existing
