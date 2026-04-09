@@ -15,6 +15,10 @@ import (
 	"github.com/kusold/gotchi/session"
 )
 
+// OIDCHandler manages the OpenID Connect authentication flow including
+// authorization redirects, token exchange, user provisioning, and tenant
+// selection. Create one with [NewOIDCHandler] and register its routes with
+// [OIDCHandler.RegisterRoutes].
 type OIDCHandler struct {
 	cfg     Config
 	oidc    *OIDCAuthenticator
@@ -22,6 +26,12 @@ type OIDCHandler struct {
 	store   IdentityStore
 }
 
+// NewOIDCHandler creates a new OIDCHandler with the given configuration,
+// session manager, and identity store. It initializes the OIDC authenticator
+// by discovering the provider's endpoints from the IssuerURL.
+//
+// Returns an error if the identity store is nil or if the OIDC provider
+// cannot be reached.
 func NewOIDCHandler(cfg Config, sessionManager *session.Manager, store IdentityStore) (*OIDCHandler, error) {
 	conf := cfg.withDefaults()
 	if store == nil {
@@ -34,6 +44,9 @@ func NewOIDCHandler(cfg Config, sessionManager *session.Manager, store IdentityS
 	return NewOIDCHandlerWithAuthenticator(conf, authenticator, sessionManager, store), nil
 }
 
+// NewOIDCHandlerWithAuthenticator creates a new OIDCHandler with a
+// pre-configured [OIDCAuthenticator]. This is useful for testing or when
+// the authenticator needs custom configuration.
 func NewOIDCHandlerWithAuthenticator(cfg Config, authenticator *OIDCAuthenticator, sessionManager *session.Manager, store IdentityStore) *OIDCHandler {
 	return &OIDCHandler{
 		cfg:     cfg.withDefaults(),
@@ -43,6 +56,12 @@ func NewOIDCHandlerWithAuthenticator(cfg Config, authenticator *OIDCAuthenticato
 	}
 }
 
+// RegisterRoutes registers the OIDC authentication routes on the given Chi
+// router:
+//   - GET [Config.AuthorizePath] — initiates the OIDC authorize redirect
+//   - GET [Config.CallbackPath] — handles the OIDC callback and token exchange
+//   - GET [Config.TenantsPath] — lists the user's tenant memberships (JSON)
+//   - POST [Config.TenantSelectPath] — selects an active tenant (JSON body)
 func (h *OIDCHandler) RegisterRoutes(r chi.Router) {
 	r.Get(h.cfg.AuthorizePath, h.AuthorizeHandler)
 	r.Get(h.cfg.CallbackPath, h.CallbackHandler)
@@ -50,6 +69,9 @@ func (h *OIDCHandler) RegisterRoutes(r chi.Router) {
 	r.Post(h.cfg.TenantSelectPath, h.SelectTenantHandler)
 }
 
+// AuthorizeHandler initiates the OIDC authorization code flow by generating
+// a state parameter, storing it in a cookie, and redirecting to the identity
+// provider's authorization endpoint.
 func (h *OIDCHandler) AuthorizeHandler(w http.ResponseWriter, r *http.Request) {
 	state, err := generateState()
 	if err != nil {
@@ -61,6 +83,10 @@ func (h *OIDCHandler) AuthorizeHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, h.oidc.AuthCodeURL(state), http.StatusFound)
 }
 
+// CallbackHandler handles the OIDC callback after user authentication. It
+// verifies the state parameter, exchanges the authorization code for tokens,
+// resolves or provisions the local user, and stores session claims. If the
+// user has multiple memberships, they are redirected to the tenant picker.
 func (h *OIDCHandler) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	stateCookie, err := r.Cookie(h.cfg.StateCookieName)
 	if err != nil {
@@ -159,6 +185,9 @@ func (h *OIDCHandler) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, h.cfg.PostLoginRedirect, http.StatusSeeOther)
 }
 
+// ListTenantsHandler returns the authenticated user's tenant memberships as
+// a JSON array. Each entry includes the tenant ID, name, role, and whether
+// it is the currently active tenant.
 func (h *OIDCHandler) ListTenantsHandler(w http.ResponseWriter, r *http.Request) {
 	claims, ok := h.getSessionClaims(r)
 	if !ok {
@@ -202,6 +231,9 @@ func (h *OIDCHandler) ListTenantsHandler(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(response)
 }
 
+// SelectTenantHandler accepts a JSON body with a "tenant_id" field and sets
+// it as the active tenant in the session. The user must be a member of the
+// specified tenant.
 func (h *OIDCHandler) SelectTenantHandler(w http.ResponseWriter, r *http.Request) {
 	claims, ok := h.getSessionClaims(r)
 	if !ok {

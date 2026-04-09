@@ -1,3 +1,70 @@
+// Package app provides a multi-tenant web application framework built on top of
+// the Chi router. It orchestrates database connections, schema migrations,
+// session management, OpenID Connect authentication, OpenAPI specification
+// serving, and OpenTelemetry observability into a single cohesive Application
+// type.
+//
+// The central type is [Application], which is created with [New] using the
+// functional options pattern and started with [Application.Run]. An Application
+// is composed of zero or more [Module] implementations that register routes on
+// the Chi router and receive shared [Dependencies] (database pool, session
+// manager, auth handler, etc.).
+//
+// # Quick Start
+//
+// Create a minimal application with a database URL and a custom module:
+//
+//	application, err := app.New(
+//	    app.WithDatabase("postgres://user:pass@localhost/mydb"),
+//	    app.WithCoreMigrations(),
+//	    app.WithMigrations(db.MigrationSource{FS: myMigrationFS, Dir: "migrations"}),
+//	    app.WithModule(app.ModuleFunc(func(r chi.Router, deps app.Dependencies) error {
+//	        r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
+//	            w.WriteHeader(http.StatusOK)
+//	        })
+//	        return nil
+//	    })),
+//	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	if err := application.Run(context.Background()); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// # Options
+//
+// Applications are configured using [Option] functions passed to [New].
+// Required options include [WithDatabase] (or [WithDatabaseConfig]). All other
+// options are optional and have sensible defaults:
+//
+//   - [WithPort] — HTTP server port (default "3000")
+//   - [WithAuth] — enables OIDC authentication (auto-enables sessions)
+//   - [WithSessions] — explicit session configuration
+//   - [WithOTEL] — OpenTelemetry tracing and metrics
+//   - [WithCORS] / [WithCORSConfig] — cross-origin resource sharing
+//   - [WithCoreMigrations] / [WithAuthMigrations] / [WithMigrations] — database schemas
+//   - [WithMiddleware] / [WithNoDefaultMiddleware] — HTTP middleware chain
+//   - [WithModule] — registers application modules
+//   - [WithClock] / [WithLogger] — testing and observability overrides
+//
+// # Modules
+//
+// A [Module] is any type that implements the single-method interface:
+//
+//	type Module interface {
+//	    Register(r chi.Router, deps Dependencies) error
+//	}
+//
+// For convenience, [ModuleFunc] wraps a plain function so it satisfies the
+// [Module] interface, similar to http.HandlerFunc.
+//
+// # Validation and Defaults
+//
+// Options are validated during [New]. The builder applies defaults for
+// unspecified optional fields (e.g., port defaults to "3000", logger defaults to
+// slog.Default). See [builder.applyDefaults] for the full list of defaults.
 package app
 
 import (
@@ -22,13 +89,16 @@ import (
 
 // Clock abstracts time for testability.
 type Clock interface {
+	// Now returns the current time according to the clock implementation.
 	Now() time.Time
 }
 
+// realClock is the production Clock implementation that delegates to time.Now.
 type realClock struct{}
 
 const defaultOTELShutdownTimeout = 5 * time.Second
 
+// Now returns the current local time.
 func (realClock) Now() time.Time {
 	return time.Now()
 }
@@ -36,26 +106,50 @@ func (realClock) Now() time.Time {
 // Module defines a self-contained unit of routes and behavior
 // that is registered with shared dependencies.
 type Module interface {
+	// Register wires the module into the Chi router using the provided
+	// Dependencies. It is called once during [Application.Run].
 	Register(r chi.Router, deps Dependencies) error
 }
 
 // ModuleFunc adapts an ordinary function to the Module interface.
 type ModuleFunc func(r chi.Router, deps Dependencies) error
 
+// Register calls f(r, deps), satisfying the [Module] interface.
 func (f ModuleFunc) Register(r chi.Router, deps Dependencies) error {
 	return f(r, deps)
 }
 
 // Dependencies holds the initialized services available to modules.
 type Dependencies struct {
-	DB            *db.Manager
-	Pool          *pgxpool.Pool
-	Session       *session.Manager
-	Auth          *auth.OIDCHandler
+	// DB is the database manager responsible for connection pooling and
+	// running migrations.
+	DB *db.Manager
+
+	// Pool is the underlying pgxpool connection pool. Use this for direct
+	// database queries within modules.
+	Pool *pgxpool.Pool
+
+	// Session provides cookie- or header-based session management backed by
+	// PostgreSQL.
+	Session *session.Manager
+
+	// Auth is the OpenID Connect handler, or nil when OIDC is disabled in
+	// the configuration.
+	Auth *auth.OIDCHandler
+
+	// IdentityStore provides user identity lookup and persistence. It is
+	// non-nil only when OIDC authentication is enabled.
 	IdentityStore auth.IdentityStore
-	OpenAPI       openapi.Config
-	Logger        *slog.Logger
-	Clock         Clock
+
+	// OpenAPI holds the configuration for serving OpenAPI documentation
+	// endpoints.
+	OpenAPI openapi.Config
+
+	// Logger is the application-wide structured logger (slog).
+	Logger *slog.Logger
+
+	// Clock provides the current time and can be replaced in tests.
+	Clock Clock
 }
 
 // Application is the main entry point. Construct one with New and
