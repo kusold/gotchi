@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/kusold/gotchi/app"
 	"github.com/kusold/gotchi/db"
@@ -18,10 +19,13 @@ func main() {
 			DatabaseURL: getenv("DATABASE_URL", ""),
 		},
 		Auth: app.AuthConfig{},
+		CORS: app.CORSConfig{
+			AllowedOrigins: parseCSV(getenv("CORS_ALLOWED_ORIGINS", "")),
+		},
 		Migrations: app.MigrationConfig{
 			EnableCore: true,
 			EnableAuth: true,
-			Sources: []db.MigrationSource{{FS: migrations.Migrations, Dir: "."}},
+			Sources:    []db.MigrationSource{{FS: migrations.Migrations, Dir: "."}},
 		},
 	}
 
@@ -37,4 +41,15 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	return parts
 }

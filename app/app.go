@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kusold/gotchi/auth"
 	"github.com/kusold/gotchi/db"
@@ -147,6 +148,17 @@ func (a *Application) Run(ctx context.Context) error {
 	a.router.Use(chiMiddleware.RealIP)
 	a.router.Use(chiMiddleware.Logger)
 	a.router.Use(chiMiddleware.Recoverer)
+
+	if len(a.cfg.CORS.AllowedOrigins) > 0 {
+		a.router.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   a.cfg.CORS.AllowedOrigins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
+			ExposedHeaders:   []string{"Link", "X-Request-ID"},
+			AllowCredentials: true,
+			MaxAge:           300,
+		}))
+	}
 
 	if a.cfg.OTEL.TracingEnabled() {
 		a.router.Use(observability.OTELTracingMiddleware(a.cfg.OTEL.ServiceName))
