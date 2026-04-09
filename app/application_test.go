@@ -1,9 +1,12 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -114,5 +117,100 @@ func TestNewAppliesDefaults(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, app.cfg.Migrations.Sources)
 		assert.Empty(t, app.cfg.Migrations.Sources)
+	})
+}
+
+func TestCORSMiddleware(t *testing.T) {
+	t.Run("sets CORS headers when origins configured", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.CORS = CORSConfig{AllowedOrigins: []string{"https://example.com"}}
+		corsCfg := cfg.CORS.WithDefaults()
+		app, err := New(cfg)
+		require.NoError(t, err)
+
+		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+		req.Header.Set("Origin", "https://example.com")
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		w := httptest.NewRecorder()
+
+		cors.Handler(cors.Options{
+			AllowedOrigins:   corsCfg.AllowedOrigins,
+			AllowedMethods:   corsCfg.AllowedMethods,
+			AllowedHeaders:   corsCfg.AllowedHeaders,
+			ExposedHeaders:   corsCfg.ExposedHeaders,
+			AllowCredentials: *corsCfg.AllowCredentials,
+			MaxAge:           corsCfg.MaxAge,
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			app.router.ServeHTTP(w, r)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, "https://example.com", w.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("rejects disallowed origin", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.CORS = CORSConfig{AllowedOrigins: []string{"https://example.com"}}
+		corsCfg := cfg.CORS.WithDefaults()
+		app, err := New(cfg)
+		require.NoError(t, err)
+
+		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+		req.Header.Set("Origin", "https://evil.com")
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		w := httptest.NewRecorder()
+
+		cors.Handler(cors.Options{
+			AllowedOrigins:   corsCfg.AllowedOrigins,
+			AllowedMethods:   corsCfg.AllowedMethods,
+			AllowedHeaders:   corsCfg.AllowedHeaders,
+			ExposedHeaders:   corsCfg.ExposedHeaders,
+			AllowCredentials: *corsCfg.AllowCredentials,
+			MaxAge:           corsCfg.MaxAge,
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			app.router.ServeHTTP(w, r)
+		})).ServeHTTP(w, req)
+
+		assert.Empty(t, w.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("respects custom AllowedMethods", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.CORS = CORSConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedMethods: []string{"GET"},
+		}
+		corsCfg := cfg.CORS.WithDefaults()
+		app, err := New(cfg)
+		require.NoError(t, err)
+
+		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+		req.Header.Set("Origin", "https://example.com")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		w := httptest.NewRecorder()
+
+		cors.Handler(cors.Options{
+			AllowedOrigins:   corsCfg.AllowedOrigins,
+			AllowedMethods:   corsCfg.AllowedMethods,
+			AllowedHeaders:   corsCfg.AllowedHeaders,
+			ExposedHeaders:   corsCfg.ExposedHeaders,
+			AllowCredentials: *corsCfg.AllowCredentials,
+			MaxAge:           corsCfg.MaxAge,
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			app.router.ServeHTTP(w, r)
+		})).ServeHTTP(w, req)
+
+		assert.Empty(t, w.Header().Get("Access-Control-Allow-Methods"))
 	})
 }

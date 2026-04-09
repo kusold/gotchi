@@ -19,6 +19,84 @@ type Config struct {
 	OpenAPI    openapi.Config
 	Migrations MigrationConfig
 	OTEL       observability.OTELConfig
+	CORS       CORSConfig
+}
+
+type CORSConfig struct {
+	AllowedOrigins   []string
+	AllowedMethods   []string
+	AllowedHeaders   []string
+	ExposedHeaders   []string
+	AllowCredentials *bool
+	MaxAge           int
+}
+
+const (
+	DefaultCORSAllowedMethodGET     = "GET"
+	DefaultCORSAllowedMethodPOST    = "POST"
+	DefaultCORSAllowedMethodPUT     = "PUT"
+	DefaultCORSAllowedMethodPATCH   = "PATCH"
+	DefaultCORSAllowedMethodDELETE  = "DELETE"
+	DefaultCORSAllowedMethodOPTIONS = "OPTIONS"
+
+	DefaultCORSAllowedHeaderAccept        = "Accept"
+	DefaultCORSAllowedHeaderAuthorization = "Authorization"
+	DefaultCORSAllowedHeaderContentType   = "Content-Type"
+	DefaultCORSAllowedHeaderXCSRFToken    = "X-CSRF-Token"
+	DefaultCORSAllowedHeaderXRequestID    = "X-Request-ID"
+
+	DefaultCORSExposedHeaderLink       = "Link"
+	DefaultCORSExposedHeaderXRequestID = "X-Request-ID"
+
+	DefaultCORSMaxAge = 300
+)
+
+var (
+	DefaultCORSAllowedMethods = []string{
+		DefaultCORSAllowedMethodGET,
+		DefaultCORSAllowedMethodPOST,
+		DefaultCORSAllowedMethodPUT,
+		DefaultCORSAllowedMethodPATCH,
+		DefaultCORSAllowedMethodDELETE,
+		DefaultCORSAllowedMethodOPTIONS,
+	}
+	DefaultCORSAllowedHeaders = []string{
+		DefaultCORSAllowedHeaderAccept,
+		DefaultCORSAllowedHeaderAuthorization,
+		DefaultCORSAllowedHeaderContentType,
+		DefaultCORSAllowedHeaderXCSRFToken,
+		DefaultCORSAllowedHeaderXRequestID,
+	}
+	DefaultCORSExposedHeaders = []string{
+		DefaultCORSExposedHeaderLink,
+		DefaultCORSExposedHeaderXRequestID,
+	}
+)
+
+func boolPtr(b bool) *bool { return &b }
+
+func (c CORSConfig) WithDefaults() CORSConfig {
+	cfg := c
+	if len(cfg.AllowedMethods) == 0 {
+		cfg.AllowedMethods = DefaultCORSAllowedMethods
+	}
+	if len(cfg.AllowedHeaders) == 0 {
+		cfg.AllowedHeaders = DefaultCORSAllowedHeaders
+	}
+	if len(cfg.ExposedHeaders) == 0 {
+		cfg.ExposedHeaders = DefaultCORSExposedHeaders
+	}
+	if cfg.AllowCredentials == nil {
+		cfg.AllowCredentials = boolPtr(true)
+	}
+	if cfg.MaxAge == 0 {
+		cfg.MaxAge = DefaultCORSMaxAge
+	}
+	return cfg
+}
+
+func (c CORSConfig) Enabled() bool {
+	return len(c.AllowedOrigins) > 0
 }
 
 type ServerConfig struct {
@@ -47,6 +125,9 @@ func (c Config) withDefaults() Config {
 	}
 	if len(cfg.Migrations.Sources) == 0 {
 		cfg.Migrations.Sources = []db.MigrationSource{}
+	}
+	if cfg.CORS.Enabled() {
+		cfg.CORS = cfg.CORS.WithDefaults()
 	}
 	return cfg
 }
