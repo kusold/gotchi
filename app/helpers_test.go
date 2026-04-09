@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kusold/gotchi/db"
+	"github.com/kusold/gotchi/observability"
 )
 
 func testOpts() []Option {
@@ -23,6 +24,13 @@ func dbConfigWithTracing(enabled bool) db.Config {
 	return db.Config{
 		DatabaseURL:       "postgres://example",
 		EnableSlogTracing: enabled,
+	}
+}
+
+func observabilityConfig() observability.OTELConfig {
+	return observability.OTELConfig{
+		ServiceName: "test-service",
+		ExporterURL: "localhost:4317",
 	}
 }
 

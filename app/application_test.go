@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/cors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +15,7 @@ func TestNewWithModules(t *testing.T) {
 		app, err := New(testOpts()...)
 		require.NoError(t, err)
 		require.NotNil(t, app)
-		assert.Empty(t, app.modules)
+		assert.Empty(t, app.config.modules)
 	})
 
 	t.Run("creates application with one module", func(t *testing.T) {
@@ -24,7 +23,7 @@ func TestNewWithModules(t *testing.T) {
 		app, err := New(opts...)
 		require.NoError(t, err)
 		require.NotNil(t, app)
-		assert.Len(t, app.modules, 1)
+		assert.Len(t, app.config.modules, 1)
 	})
 
 	t.Run("creates application with multiple modules", func(t *testing.T) {
@@ -32,7 +31,7 @@ func TestNewWithModules(t *testing.T) {
 		app, err := New(opts...)
 		require.NoError(t, err)
 		require.NotNil(t, app)
-		assert.Len(t, app.modules, 2)
+		assert.Len(t, app.config.modules, 2)
 	})
 }
 
@@ -97,31 +96,33 @@ func TestApplicationInitialState(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, app.router)
 	assert.NotNil(t, app.db)
-	assert.Equal(t, "3000", app.port)
-	assert.Equal(t, "postgres://example", app.dbConfig.DatabaseURL)
-	assert.True(t, app.dbConfig.EnableSlogTracing)
+	assert.Equal(t, "3000", app.config.port)
+	assert.Equal(t, "postgres://example", app.config.dbConfig.DatabaseURL)
+	assert.True(t, app.config.dbConfig.EnableSlogTracing)
 }
 
 func TestNewAppliesDefaults(t *testing.T) {
 	t.Run("applies default port when not provided", func(t *testing.T) {
 		app, err := New(WithDatabase("postgres://example"))
 		require.NoError(t, err)
-		assert.Equal(t, "3000", app.port)
+		assert.Equal(t, "3000", app.config.port)
 	})
 
 	t.Run("initializes empty migration sources", func(t *testing.T) {
 		app, err := New(testOpts()...)
 		require.NoError(t, err)
-		assert.Empty(t, app.migrationSources)
+		assert.Empty(t, app.config.migrationSources)
 	})
 }
 
 func TestCORSMiddleware(t *testing.T) {
 	t.Run("sets CORS headers when origins configured", func(t *testing.T) {
-		origins := []string{"https://example.com"}
-		opts := append(testOpts(), WithCORS(origins...))
+		opts := append(testOpts(), WithCORS("https://example.com"), WithNoDefaultMiddleware())
 		app, err := New(opts...)
 		require.NoError(t, err)
+
+		// Apply middleware to the router (no session manager needed for CORS)
+		app.setupMiddleware(nil)
 
 		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -132,25 +133,17 @@ func TestCORSMiddleware(t *testing.T) {
 		req.Header.Set("Access-Control-Request-Method", "GET")
 		w := httptest.NewRecorder()
 
-		cors.Handler(cors.Options{
-			AllowedOrigins:   origins,
-			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
-			ExposedHeaders:   []string{"Link", "X-Request-ID"},
-			AllowCredentials: true,
-			MaxAge:           300,
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			app.router.ServeHTTP(w, r)
-		})).ServeHTTP(w, req)
+		app.router.ServeHTTP(w, req)
 
 		assert.Equal(t, "https://example.com", w.Header().Get("Access-Control-Allow-Origin"))
 	})
 
 	t.Run("rejects disallowed origin", func(t *testing.T) {
-		origins := []string{"https://example.com"}
-		opts := append(testOpts(), WithCORS(origins...))
+		opts := append(testOpts(), WithCORS("https://example.com"), WithNoDefaultMiddleware())
 		app, err := New(opts...)
 		require.NoError(t, err)
+
+		app.setupMiddleware(nil)
 
 		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -161,17 +154,59 @@ func TestCORSMiddleware(t *testing.T) {
 		req.Header.Set("Access-Control-Request-Method", "GET")
 		w := httptest.NewRecorder()
 
-		cors.Handler(cors.Options{
-			AllowedOrigins:   origins,
-			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
-			ExposedHeaders:   []string{"Link", "X-Request-ID"},
-			AllowCredentials: true,
-			MaxAge:           300,
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			app.router.ServeHTTP(w, r)
-		})).ServeHTTP(w, req)
+		app.router.ServeHTTP(w, req)
 
 		assert.Empty(t, w.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("no CORS headers when not configured", func(t *testing.T) {
+		opts := append(testOpts(), WithNoDefaultMiddleware())
+		app, err := New(opts...)
+		require.NoError(t, err)
+
+		app.setupMiddleware(nil)
+
+		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+		req.Header.Set("Origin", "https://example.com")
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		w := httptest.NewRecorder()
+
+		app.router.ServeHTTP(w, req)
+
+		assert.Empty(t, w.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("WithCORSConfig applies custom settings", func(t *testing.T) {
+		cfg := CORSConfig{
+			AllowedOrigins:   []string{"https://custom.com"},
+			AllowedMethods:   []string{"GET"},
+			AllowedHeaders:   []string{"X-Custom"},
+			AllowCredentials: false,
+			MaxAge:           600,
+		}
+		opts := append(testOpts(), WithCORSConfig(cfg), WithNoDefaultMiddleware())
+		app, err := New(opts...)
+		require.NoError(t, err)
+
+		app.setupMiddleware(nil)
+
+		app.router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+		req.Header.Set("Origin", "https://custom.com")
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		w := httptest.NewRecorder()
+
+		app.router.ServeHTTP(w, req)
+
+		assert.Equal(t, "https://custom.com", w.Header().Get("Access-Control-Allow-Origin"))
+		assert.Equal(t, "GET", w.Header().Get("Access-Control-Allow-Methods"))
+		assert.Equal(t, "600", w.Header().Get("Access-Control-Max-Age"))
 	})
 }

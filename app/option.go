@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/go-chi/cors"
 	"github.com/kusold/gotchi/auth"
 	"github.com/kusold/gotchi/db"
 	"github.com/kusold/gotchi/observability"
@@ -14,6 +15,42 @@ import (
 
 // Option configures an Application during construction.
 type Option func(*builder) error
+
+// CORSConfig controls cross-origin resource sharing behavior.
+// For simple cases, use WithCORS(origins...) which applies sensible defaults.
+// For full control, use WithCORSConfig.
+type CORSConfig struct {
+	AllowedOrigins   []string
+	AllowedMethods   []string
+	AllowedHeaders   []string
+	ExposedHeaders   []string
+	AllowCredentials bool
+	MaxAge           int
+}
+
+// corsDefaults returns a CORSConfig with the opinionated defaults
+// that were previously hardcoded.
+func corsDefaults(origins []string) CORSConfig {
+	return CORSConfig{
+		AllowedOrigins:   origins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
+		ExposedHeaders:   []string{"Link", "X-Request-ID"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}
+}
+
+func (c CORSConfig) toChiOptions() cors.Options {
+	return cors.Options{
+		AllowedOrigins:   c.AllowedOrigins,
+		AllowedMethods:   c.AllowedMethods,
+		AllowedHeaders:   c.AllowedHeaders,
+		ExposedHeaders:   c.ExposedHeaders,
+		AllowCredentials: c.AllowCredentials,
+		MaxAge:           c.MaxAge,
+	}
+}
 
 // builder accumulates configuration from options before constructing the Application.
 type builder struct {
@@ -35,7 +72,7 @@ type builder struct {
 	otelConfig *observability.OTELConfig
 
 	// CORS (optional)
-	corsOrigins []string
+	corsConfig *CORSConfig
 
 	// OpenAPI
 	openAPIConfig *openapi.Config
@@ -118,13 +155,13 @@ func WithPort(port string) Option {
 	}
 }
 
-// WithAuth enables OIDC authentication. Sessions are automatically enabled
+// WithAuth enables OIDC authentication with the provided configuration.
+// The Enabled field on the config is ignored — calling WithAuth is the
+// signal that auth should be enabled. Sessions are automatically enabled
 // with default settings if not explicitly configured via WithSessions.
 func WithAuth(cfg auth.Config) Option {
 	return func(b *builder) error {
-		enabled := cfg
-		enabled.Enabled = true
-		b.authConfig = &enabled
+		b.authConfig = &cfg
 		return nil
 	}
 }
@@ -156,20 +193,31 @@ func WithSessions(cfg session.Config) Option {
 	}
 }
 
-// WithOTEL enables OpenTelemetry tracing and/or metrics.
+// WithOTEL enables OpenTelemetry with the provided configuration.
+// The Enabled field on the config is ignored — calling WithOTEL is the
+// signal that OTEL should be enabled.
 func WithOTEL(cfg observability.OTELConfig) Option {
 	return func(b *builder) error {
-		enabled := cfg
-		enabled.Enabled = true
-		b.otelConfig = &enabled
+		b.otelConfig = &cfg
 		return nil
 	}
 }
 
-// WithCORS enables CORS with the specified allowed origins.
+// WithCORS enables CORS with the specified allowed origins and
+// sensible defaults for methods, headers, credentials, and max age.
+// For full control over all CORS options, use WithCORSConfig instead.
 func WithCORS(origins ...string) Option {
 	return func(b *builder) error {
-		b.corsOrigins = origins
+		cfg := corsDefaults(origins)
+		b.corsConfig = &cfg
+		return nil
+	}
+}
+
+// WithCORSConfig enables CORS with full control over all options.
+func WithCORSConfig(cfg CORSConfig) Option {
+	return func(b *builder) error {
+		b.corsConfig = &cfg
 		return nil
 	}
 }
