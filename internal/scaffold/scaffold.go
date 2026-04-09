@@ -45,20 +45,14 @@ import (
 )
 
 func main() {
-	cfg := app.Config{
-		Server: app.ServerConfig{Port: getenv("PORT", "3000")},
-		Database: db.Config{
-			DatabaseURL: getenv("DATABASE_URL", ""),
-		},
-		Auth: app.AuthConfig{},
-		Migrations: app.MigrationConfig{
-			EnableCore: true,
-			EnableAuth: true,
-			Sources: []db.MigrationSource{{FS: migrations.Migrations, Dir: "."}},
-		},
-	}
-
-	application, err := app.New(cfg, module.New())
+	application, err := app.New(
+		app.WithDatabase(getenv("DATABASE_URL", "")),
+		app.WithPort(getenv("PORT", "3000")),
+		app.WithCoreMigrations(),
+		app.WithAuthMigrations(),
+		app.WithMigrations(db.MigrationSource{FS: migrations.Migrations, Dir: "."}),
+		app.WithModule(module.New()),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
