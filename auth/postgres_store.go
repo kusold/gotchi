@@ -13,16 +13,25 @@ import (
 	"github.com/kusold/gotchi/internal/db"
 )
 
+// PostgresStoreConfig configures the [PostgresIdentityStore].
 type PostgresStoreConfig struct {
+	// DefaultTenantName is the name used when creating the first tenant for a
+	// new user who has no existing tenant. Defaults to "Default".
 	DefaultTenantName string
 }
 
+// PostgresIdentityStore implements [IdentityStore] using PostgreSQL. It stores
+// users, tenants, and memberships in the database tables created by the auth
+// migrations ([migrations.Auth]).
 type PostgresIdentityStore struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
 	cfg     PostgresStoreConfig
 }
 
+// NewPostgresIdentityStore creates a new PostgreSQL-backed identity store.
+// The pool must be connected to a database with the auth schema migrations
+// applied.
 func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*PostgresIdentityStore, error) {
 	conf := cfg
 	if conf.DefaultTenantName == "" {
@@ -36,6 +45,7 @@ func NewPostgresIdentityStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) (*Pos
 	}, nil
 }
 
+// ResolveOrProvisionUser implements [IdentityStore.ResolveOrProvisionUser].
 func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, identity Identity) (UserRef, error) {
 	if s.pool == nil {
 		return UserRef{}, fmt.Errorf("postgres pool is required")
@@ -118,6 +128,7 @@ func (s *PostgresIdentityStore) ResolveOrProvisionUser(ctx context.Context, iden
 	}, nil
 }
 
+// ListMemberships implements [IdentityStore.ListMemberships].
 func (s *PostgresIdentityStore) ListMemberships(ctx context.Context, userID uuid.UUID) ([]Membership, error) {
 	rows, err := s.queries.ListMemberships(ctx, userID)
 	if err != nil {
@@ -135,6 +146,7 @@ func (s *PostgresIdentityStore) ListMemberships(ctx context.Context, userID uuid
 	return memberships, nil
 }
 
+// GetTenantDisplay implements [IdentityStore.GetTenantDisplay].
 func (s *PostgresIdentityStore) GetTenantDisplay(ctx context.Context, tenantID uuid.UUID) (TenantDisplay, error) {
 	row, err := s.queries.GetTenantByID(ctx, tenantID)
 	if err != nil {

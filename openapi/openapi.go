@@ -1,3 +1,26 @@
+// Package openapi provides HTTP middleware for validating requests and responses
+// against an OpenAPI specification, and utilities for mounting oapi-codegen
+// generated handlers onto a Chi router.
+//
+// # Request Validation
+//
+// Use [Validator] to create middleware that validates incoming requests against
+// an OpenAPI spec. Invalid requests receive a structured JSON error response:
+//
+//	spec, _ := os.ReadFile("openapi.yaml")
+//	r.Use(openapi.Validator(spec, openapi.Config{}))
+//
+// # Mounting oapi-codegen Handlers
+//
+// Use [MountChi] to register oapi-codegen generated server interfaces on a
+// Chi router with optional middleware groups:
+//
+//	openapi.MountChi(r, myHandler, MyServerRegisterer, authMiddleware)
+//
+// # Custom Error Encoding
+//
+// Implement the [ErrorEncoder] interface or use [ErrorEncoderFunc] to customize
+// how validation errors are rendered to clients.
 package openapi
 
 import (
@@ -17,31 +40,47 @@ import (
 	validationErrors "github.com/pb33f/libopenapi-validator/errors"
 )
 
+// ErrorDetail describes a single validation failure in a structured format.
 type ErrorDetail struct {
-	Type   string `json:"type,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Type   string `json:"type,omitempty"`  // The validation error type (e.g. "schema").
+	Reason string `json:"reason,omitempty"` // Human-readable explanation of the error.
 }
 
+// ErrorPayload is the top-level JSON structure returned when request validation
+// fails. Message contains a human-readable summary; Errors provides granular
+// details for each validation violation.
 type ErrorPayload struct {
-	Message string        `json:"message"`
-	Errors  []ErrorDetail `json:"errors,omitempty"`
+	Message string        `json:"message"`            // Human-readable summary of the validation failure.
+	Errors  []ErrorDetail `json:"errors,omitempty"`   // Detailed validation errors, if available.
 }
 
+// ErrorEncoder encodes validation error responses into an HTTP response.
+// Implement this interface to customize error output format.
 type ErrorEncoder interface {
 	Encode(w http.ResponseWriter, statusCode int, payload ErrorPayload)
 }
 
+// ErrorEncoderFunc is a function adapter for the [ErrorEncoder] interface.
 type ErrorEncoderFunc func(w http.ResponseWriter, statusCode int, payload ErrorPayload)
 
+// Encode calls f(w, statusCode, payload), satisfying the [ErrorEncoder] interface.
 func (f ErrorEncoderFunc) Encode(w http.ResponseWriter, statusCode int, payload ErrorPayload) {
 	f(w, statusCode, payload)
 }
 
+// Config controls the behavior of the validation middleware. A zero-value
+// Config is valid and uses sensible defaults.
 type Config struct {
-	ErrorEncoder        ErrorEncoder
+	// ErrorEncoder formats and writes validation error responses. When nil,
+	// a default JSON encoder is used.
+	ErrorEncoder ErrorEncoder
+	// MaxRequestBodyBytes is the maximum allowed size for request bodies.
+	// Requests exceeding this limit receive a 413 response. Defaults to
+	// 1 MiB (DefaultMaxRequestBodyBytes) when zero or negative.
 	MaxRequestBodyBytes int64
 }
 
+// DefaultMaxRequestBodyBytes is the default maximum request body size (1 MiB).
 const DefaultMaxRequestBodyBytes int64 = 1 << 20
 
 var errRequestBodyTooLarge = errors.New("request body too large")

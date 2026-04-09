@@ -1,3 +1,36 @@
+// Package db provides database connection management for gotchi applications
+// with built-in support for multi-tenancy, schema migrations, and OpenTelemetry
+// tracing.
+//
+// The [Manager] type handles the lifecycle of a PostgreSQL connection pool
+// ([pgxpool.Pool]) with automatic tenant isolation via the [tenantctx] package.
+// When a connection is acquired from the pool, it automatically sets the tenant
+// context using the PostgreSQL set_tenant function if one is present in the
+// request context.
+//
+// # Quick Start
+//
+// Create a manager, register migrations, connect, and run them:
+//
+//	dbMgr := db.NewManager(db.Config{
+//	    DatabaseURL: "postgres://user:pass@localhost:5432/mydb",
+//	})
+//	dbMgr.AddMigrationSource(db.MigrationSource{
+//	    FS:  migrations.Core(),
+//	    Dir: ".",
+//	})
+//	if err := dbMgr.Connect(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//	if err := dbMgr.RunMigrations(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// # Multi-Tenancy
+//
+// Connections automatically apply tenant isolation based on the tenant ID stored
+// in the request context via [tenantctx.WithTenantID]. Use [AdminContext] for
+// operations that should bypass tenant filtering (e.g., migrations).
 package db
 
 import (
@@ -19,28 +52,45 @@ import (
 	"github.com/kusold/gotchi/tenantctx"
 )
 
+// Config holds the settings for connecting to a PostgreSQL database.
 type Config struct {
-	DatabaseURL       string
-	SearchPath        string // Optional: set search_path for all connections (used by migration-regression)
+	// DatabaseURL is the PostgreSQL connection string (e.g.
+	// "postgres://user:pass@host:5432/dbname?sslmode=disable"). Required.
+	DatabaseURL string
+	// SearchPath optionally sets the PostgreSQL search_path for all connections.
+	// This is primarily used for migration tooling.
+	SearchPath string
+	// EnableSlogTracing enables pgx query logging via slog at trace level.
 	EnableSlogTracing bool
-	OTELTracing       bool
+	// OTELTracing enables OpenTelemetry tracing for database queries via otelpgx.
+	OTELTracing bool
 }
 
+// MigrationSource describes a set of SQL migration files to apply. FS is an
+// [fs.FS] containing goose-formatted .sql files, and Dir is the subdirectory
+// within FS to use (defaults to "." when empty).
 type MigrationSource struct {
 	FS  fs.FS
 	Dir string
 }
 
+// Manager manages the lifecycle of a PostgreSQL connection pool with support
+// for multi-tenancy and migrations. Create one with [NewManager], register
+// migration sources, then call [Manager.Connect] to establish the pool.
 type Manager struct {
 	cfg            Config
 	pool           *pgxpool.Pool
 	migrationFiles []MigrationSource
 }
 
+// NewManager creates a new database Manager with the given configuration.
+// The returned Manager has no pool until [Manager.Connect] is called.
 func NewManager(cfg Config) *Manager {
 	return &Manager{cfg: cfg}
 }
 
+// AddMigrationSource registers a migration source to be applied when
+// [Manager.RunMigrations] is called. If source.Dir is empty it defaults to ".".
 func (m *Manager) AddMigrationSource(source MigrationSource) {
 	if source.Dir == "" {
 		source.Dir = "."
@@ -48,6 +98,9 @@ func (m *Manager) AddMigrationSource(source MigrationSource) {
 	m.migrationFiles = append(m.migrationFiles, source)
 }
 
+// Connect establishes the connection pool using the configured DatabaseURL.
+// If a pool already exists it returns nil immediately. After connecting it
+// pings the database using an [AdminContext] to verify connectivity.
 func (m *Manager) Connect(ctx context.Context) error {
 	if m.pool != nil {
 		return nil
@@ -75,10 +128,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return m.Ping(AdminContext(ctx))
 }
 
+// EnableOTELTracing enables OpenTelemetry tracing on the database connections.
+// This must be called before [Manager.Connect] to take effect.
 func (m *Manager) EnableOTELTracing() {
 	m.cfg.OTELTracing = true
 }
 
+// Close shuts down the connection pool and releases all resources.
 func (m *Manager) Close() error {
 	if m.pool != nil {
 		m.pool.Close()
@@ -86,6 +142,8 @@ func (m *Manager) Close() error {
 	return nil
 }
 
+// Ping verifies connectivity to the database. Returns an error if the pool
+// has not been initialized.
 func (m *Manager) Ping(ctx context.Context) error {
 	if m.pool == nil {
 		return fmt.Errorf("database pool is not initialized")
@@ -93,10 +151,15 @@ func (m *Manager) Ping(ctx context.Context) error {
 	return m.pool.Ping(ctx)
 }
 
+// Pool returns the underlying pgxpool.Pool. Returns nil if [Manager.Connect]
+// has not been called.
 func (m *Manager) Pool() *pgxpool.Pool {
 	return m.pool
 }
 
+// RunMigrations applies all registered migration sources in order using
+// goose. Migrations are run using an [AdminContext] to bypass tenant
+// isolation. Returns nil immediately if no migration sources are registered.
 func (m *Manager) RunMigrations(ctx context.Context) error {
 	if m.pool == nil {
 		return fmt.Errorf("database pool is not initialized")
@@ -121,6 +184,9 @@ func (m *Manager) RunMigrations(ctx context.Context) error {
 	return nil
 }
 
+// AdminContext returns a context with the system tenant set, bypassing
+// tenant isolation. Use this for administrative operations like migrations
+// or internal queries that need access to all tenant data.
 func AdminContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

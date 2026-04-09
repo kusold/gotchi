@@ -12,21 +12,43 @@ import (
 	"github.com/kusold/gotchi/tenantctx"
 )
 
+// Mode determines how the authentication middleware handles unauthenticated
+// users and tenant selection requirements.
 type Mode string
 
 const (
+	// ModeAPI returns HTTP 401/409 JSON responses for unauthenticated or
+	// tenant-less requests.
 	ModeAPI Mode = "api"
-	ModeUI  Mode = "ui"
+	// ModeUI redirects to login or tenant picker pages for unauthenticated
+	// or tenant-less requests.
+	ModeUI Mode = "ui"
 )
 
+// MiddlewareConfig controls the behavior of [RequireAuthenticated] middleware.
 type MiddlewareConfig struct {
-	Mode                    Mode
-	SessionKey              string
-	LoginPath               string
-	TenantPickerPath        string
+	// Mode determines how unauthenticated/tenant-less requests are handled.
+	// Defaults to ModeAPI.
+	Mode Mode
+	// SessionKey is the session key where auth claims are stored.
+	// Defaults to [DefaultSessionKey].
+	SessionKey string
+	// LoginPath is the URL to redirect to when Mode is ModeUI.
+	// Defaults to [DefaultLoginPath].
+	LoginPath string
+	// TenantPickerPath is the URL to redirect to when a tenant selection
+	// is required and Mode is ModeUI. Defaults to [DefaultTenantPickerPath].
+	TenantPickerPath string
+	// AllowPathsWithoutTenant is a list of URL paths that are accessible
+	// without an active tenant. Supports "*" suffix for prefix matching
+	// (e.g. "/auth/*"). Defaults to the tenant picker and select paths.
 	AllowPathsWithoutTenant []string
-	LegacyTenantContextKey  any
-	LegacyClaimsContextKey  any
+	// LegacyTenantContextKey, when non-nil, causes the tenant ID to be set
+	// in context under this key for backward compatibility.
+	LegacyTenantContextKey any
+	// LegacyClaimsContextKey, when non-nil, causes the SessionClaims to be
+	// set in context under this key for backward compatibility.
+	LegacyClaimsContextKey any
 }
 
 func (c MiddlewareConfig) withDefaults() MiddlewareConfig {
@@ -49,6 +71,14 @@ func (c MiddlewareConfig) withDefaults() MiddlewareConfig {
 	return cfg
 }
 
+// RequireAuthenticated returns HTTP middleware that enforces authentication.
+// It checks for valid [SessionClaims] in the session and, if a tenant is
+// required, ensures one is selected. On success it sets the claims and tenant
+// ID in the request context via [WithSessionClaims] and [tenantctx.WithTenantID].
+//
+// In ModeAPI (default), unauthenticated requests receive 401 and tenant-less
+// requests receive 409 with a JSON body. In ModeUI, they are redirected to
+// the login page or tenant picker respectively.
 func RequireAuthenticated(sessionManager *session.Manager, cfg MiddlewareConfig) func(http.Handler) http.Handler {
 	conf := cfg.withDefaults()
 
@@ -121,6 +151,8 @@ func isTenantOptionalPath(path string, allowPaths []string) bool {
 	return false
 }
 
+// ActiveTenantID extracts the active tenant ID from the context. This is a
+// convenience wrapper around [tenantctx.TenantID].
 func ActiveTenantID(ctx context.Context) (uuid.UUID, bool) {
 	return tenantctx.TenantID(ctx)
 }
