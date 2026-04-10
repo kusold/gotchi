@@ -62,10 +62,11 @@ type Application struct {
 	config builder
 
 	// runtime state
-	router       *chi.Mux
-	db           *db.Manager
-	dependencies Dependencies
-	otelShutdown func(context.Context) error
+	router         *chi.Mux
+	db             *db.Manager
+	dependencies   Dependencies
+	resolvedOTEL   *observability.OTELConfig
+	otelShutdown   func(context.Context) error
 }
 
 // New creates an Application from the supplied options.
@@ -114,14 +115,15 @@ func (a *Application) Run(ctx context.Context) error {
 
 	// --- OTEL ---
 	if cfg.otelConfig != nil {
-		otelCfg := *cfg.otelConfig
-		otelCfg.Enabled = true
-		shutdown, err := observability.SetupOTEL(ctx, otelCfg)
+		resolved := cfg.otelConfig.WithDefaults()
+		resolved.Enabled = true
+		a.resolvedOTEL = &resolved
+		shutdown, err := observability.SetupOTEL(ctx, resolved)
 		if err != nil {
 			return fmt.Errorf("setting up OTEL: %w", err)
 		}
 		a.otelShutdown = shutdown
-		if otelCfg.TracingEnabled() {
+		if resolved.TracingEnabled() {
 			a.db.EnableOTELTracing()
 		}
 	}
@@ -231,14 +233,12 @@ func (a *Application) setupMiddleware(sessionManager *session.Manager) {
 		a.router.Use(cors.Handler(cfg.corsConfig.toChiOptions()))
 	}
 
-	if cfg.otelConfig != nil {
-		otelCfg := *cfg.otelConfig
-		otelCfg.Enabled = true
-		if otelCfg.TracingEnabled() {
-			a.router.Use(observability.OTELTracingMiddleware(otelCfg.ServiceName))
+	if a.resolvedOTEL != nil {
+		if a.resolvedOTEL.TracingEnabled() {
+			a.router.Use(observability.OTELTracingMiddleware(a.resolvedOTEL.ServiceName))
 		}
-		if otelCfg.MetricsEnabled() {
-			a.router.Use(observability.OTELMetricsMiddleware(otelCfg.ServiceName))
+		if a.resolvedOTEL.MetricsEnabled() {
+			a.router.Use(observability.OTELMetricsMiddleware(a.resolvedOTEL.ServiceName))
 		}
 	}
 
@@ -264,9 +264,8 @@ func (a *Application) Close() error {
 	}
 	if a.otelShutdown != nil {
 		timeout := 5 * time.Second
-		if a.config.otelConfig != nil {
-			otelCfg := a.config.otelConfig.WithDefaults()
-			timeout = otelCfg.ShutdownTimeout
+		if a.resolvedOTEL != nil {
+			timeout = a.resolvedOTEL.ShutdownTimeout
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
