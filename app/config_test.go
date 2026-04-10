@@ -144,6 +144,20 @@ func TestWithCORS(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, app.config.corsConfig)
 	})
+
+	t.Run("rejects wildcard origin because credentials default to true", func(t *testing.T) {
+		opts := append(testOpts(), WithCORS("*"))
+		_, err := New(opts...)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "wildcard origin (*) is incompatible with AllowCredentials: true")
+	})
+
+	t.Run("rejects no origins", func(t *testing.T) {
+		opts := append(testOpts(), WithCORS())
+		_, err := New(opts...)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one allowed origin")
+	})
 }
 
 func TestWithCORSConfig(t *testing.T) {
@@ -163,6 +177,38 @@ func TestWithCORSConfig(t *testing.T) {
 		assert.Equal(t, []string{"X-Custom"}, app.config.corsConfig.AllowedHeaders)
 		assert.False(t, app.config.corsConfig.AllowCredentials)
 		assert.Equal(t, 600, app.config.corsConfig.MaxAge)
+	})
+
+	t.Run("rejects wildcard origin with credentials", func(t *testing.T) {
+		cfg := CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: true,
+		}
+		opts := append(testOpts(), WithCORSConfig(cfg))
+		_, err := New(opts...)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "wildcard origin (*) is incompatible with AllowCredentials: true")
+	})
+
+	t.Run("allows wildcard origin without credentials", func(t *testing.T) {
+		cfg := CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: false,
+		}
+		opts := append(testOpts(), WithCORSConfig(cfg))
+		app, err := New(opts...)
+		require.NoError(t, err)
+		require.NotNil(t, app.config.corsConfig)
+	})
+
+	t.Run("rejects empty origins", func(t *testing.T) {
+		cfg := CORSConfig{
+			AllowedOrigins: []string{},
+		}
+		opts := append(testOpts(), WithCORSConfig(cfg))
+		_, err := New(opts...)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one allowed origin")
 	})
 }
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -206,20 +207,46 @@ func WithOTEL(cfg observability.OTELConfig) Option {
 // WithCORS enables CORS with the specified allowed origins and
 // sensible defaults for methods, headers, credentials, and max age.
 // For full control over all CORS options, use WithCORSConfig instead.
+//
+// Wildcard origins ("*") are not allowed because this function always
+// sets AllowCredentials to true, which is incompatible with "*" per the
+// CORS spec. Use WithCORSConfig with AllowCredentials: false if you need
+// a wildcard origin.
 func WithCORS(origins ...string) Option {
 	return func(b *builder) error {
 		cfg := corsDefaults(origins)
+		if err := cfg.validate(); err != nil {
+			return err
+		}
 		b.corsConfig = &cfg
 		return nil
 	}
 }
 
 // WithCORSConfig enables CORS with full control over all options.
+// Returns an error if the configuration is invalid (e.g., wildcard origin
+// with credentials enabled, or empty origins).
 func WithCORSConfig(cfg CORSConfig) Option {
 	return func(b *builder) error {
+		if err := cfg.validate(); err != nil {
+			return err
+		}
 		b.corsConfig = &cfg
 		return nil
 	}
+}
+
+// validate checks the CORSConfig for common misconfigurations.
+func (c CORSConfig) validate() error {
+	if len(c.AllowedOrigins) == 0 {
+		return errors.New("CORS requires at least one allowed origin")
+	}
+	for _, o := range c.AllowedOrigins {
+		if o == "*" && c.AllowCredentials {
+			return errors.New("CORS wildcard origin (*) is incompatible with AllowCredentials: true; use specific origins or set AllowCredentials to false")
+		}
+	}
+	return nil
 }
 
 // WithOpenAPI configures OpenAPI request/response validation.
