@@ -7,6 +7,7 @@ import (
 	"testing/fstest"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/kusold/gotchi/auth"
 	"github.com/kusold/gotchi/db"
 	"github.com/stretchr/testify/assert"
@@ -151,23 +152,18 @@ func TestWithCORS(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "wildcard origin (*) is incompatible with AllowCredentials: true")
 	})
-
-	t.Run("rejects no origins", func(t *testing.T) {
-		opts := append(testOpts(), WithCORS())
-		_, err := New(opts...)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "at least one allowed origin")
-	})
 }
 
 func TestWithCORSConfig(t *testing.T) {
 	t.Run("allows full CORS control", func(t *testing.T) {
 		cfg := CORSConfig{
-			AllowedOrigins:   []string{"https://custom.com"},
-			AllowedMethods:   []string{"GET"},
-			AllowedHeaders:   []string{"X-Custom"},
-			AllowCredentials: false,
-			MaxAge:           600,
+			Options: cors.Options{
+				AllowedOrigins:   []string{"https://custom.com"},
+				AllowedMethods:   []string{"GET"},
+				AllowedHeaders:   []string{"X-Custom"},
+				AllowCredentials: false,
+				MaxAge:           600,
+			},
 		}
 		opts := append(testOpts(), WithCORSConfig(cfg))
 		app, err := New(opts...)
@@ -181,8 +177,10 @@ func TestWithCORSConfig(t *testing.T) {
 
 	t.Run("rejects wildcard origin with credentials", func(t *testing.T) {
 		cfg := CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: true,
+			Options: cors.Options{
+				AllowedOrigins:   []string{"*"},
+				AllowCredentials: true,
+			},
 		}
 		opts := append(testOpts(), WithCORSConfig(cfg))
 		_, err := New(opts...)
@@ -192,8 +190,10 @@ func TestWithCORSConfig(t *testing.T) {
 
 	t.Run("allows wildcard origin without credentials", func(t *testing.T) {
 		cfg := CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: false,
+			Options: cors.Options{
+				AllowedOrigins:   []string{"*"},
+				AllowCredentials: false,
+			},
 		}
 		opts := append(testOpts(), WithCORSConfig(cfg))
 		app, err := New(opts...)
@@ -203,7 +203,9 @@ func TestWithCORSConfig(t *testing.T) {
 
 	t.Run("rejects empty origins", func(t *testing.T) {
 		cfg := CORSConfig{
-			AllowedOrigins: []string{},
+			Options: cors.Options{
+				AllowedOrigins: []string{},
+			},
 		}
 		opts := append(testOpts(), WithCORSConfig(cfg))
 		_, err := New(opts...)

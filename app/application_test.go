@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -182,11 +183,13 @@ func TestCORSMiddleware(t *testing.T) {
 
 	t.Run("WithCORSConfig applies custom settings", func(t *testing.T) {
 		cfg := CORSConfig{
-			AllowedOrigins:   []string{"https://custom.com"},
-			AllowedMethods:   []string{"GET"},
-			AllowedHeaders:   []string{"X-Custom"},
-			AllowCredentials: false,
-			MaxAge:           600,
+			Options: cors.Options{
+				AllowedOrigins:   []string{"https://custom.com"},
+				AllowedMethods:   []string{"GET"},
+				AllowedHeaders:   []string{"X-Custom"},
+				AllowCredentials: false,
+				MaxAge:           600,
+			},
 		}
 		opts := append(testOpts(), WithCORSConfig(cfg), WithNoDefaultMiddleware())
 		app, err := New(opts...)
