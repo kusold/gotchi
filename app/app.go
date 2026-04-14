@@ -27,6 +27,8 @@ type Clock interface {
 
 type realClock struct{}
 
+const defaultOTELShutdownTimeout = 5 * time.Second
+
 func (realClock) Now() time.Time {
 	return time.Now()
 }
@@ -230,7 +232,7 @@ func (a *Application) setupMiddleware(sessionManager *session.Manager) {
 	}
 
 	if cfg.corsConfig != nil {
-		a.router.Use(cors.Handler(cfg.corsConfig.toChiOptions()))
+		a.router.Use(cors.Handler(cfg.corsConfig.Options))
 	}
 
 	if a.resolvedOTEL != nil {
@@ -263,7 +265,7 @@ func (a *Application) Close() error {
 		errs = append(errs, err)
 	}
 	if a.otelShutdown != nil {
-		timeout := 5 * time.Second
+		timeout := defaultOTELShutdownTimeout
 		if a.resolvedOTEL != nil {
 			timeout = a.resolvedOTEL.ShutdownTimeout
 		}

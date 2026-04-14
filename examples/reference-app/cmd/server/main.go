@@ -13,15 +13,21 @@ import (
 )
 
 func main() {
-	application, err := app.New(
+	var opts []app.Option
+	opts = append(opts,
 		app.WithDatabase(getenv("DATABASE_URL", "")),
 		app.WithPort(getenv("PORT", "3000")),
-		app.WithCORS(parseCSV(getenv("CORS_ALLOWED_ORIGINS", ""))...),
 		app.WithCoreMigrations(),
 		app.WithAuthMigrations(),
 		app.WithMigrations(db.MigrationSource{FS: migrations.Migrations, Dir: "."}),
 		app.WithModule(module.New()),
 	)
+
+	if origins := parseCSV(getenv("CORS_ALLOWED_ORIGINS", "")); len(origins) > 0 {
+		opts = append(opts, app.WithCORS(origins[0], origins[1:]...))
+	}
+
+	application, err := app.New(opts...)
 	if err != nil {
 		log.Fatal(err)
 	}

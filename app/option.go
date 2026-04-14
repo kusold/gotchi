@@ -18,38 +18,25 @@ import (
 type Option func(*builder) error
 
 // CORSConfig controls cross-origin resource sharing behavior.
-// For simple cases, use WithCORS(origins...) which applies sensible defaults.
+// For simple cases, use WithCORS which applies sensible defaults.
 // For full control, use WithCORSConfig.
 type CORSConfig struct {
-	AllowedOrigins   []string
-	AllowedMethods   []string
-	AllowedHeaders   []string
-	ExposedHeaders   []string
-	AllowCredentials bool
-	MaxAge           int
+	cors.Options
 }
 
 // corsDefaults returns a CORSConfig with the opinionated defaults
 // that were previously hardcoded.
-func corsDefaults(origins []string) CORSConfig {
+func corsDefaults(first string, rest ...string) CORSConfig {
+	origins := append([]string{first}, rest...)
 	return CORSConfig{
-		AllowedOrigins:   origins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
-		ExposedHeaders:   []string{"Link", "X-Request-ID"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}
-}
-
-func (c CORSConfig) toChiOptions() cors.Options {
-	return cors.Options{
-		AllowedOrigins:   c.AllowedOrigins,
-		AllowedMethods:   c.AllowedMethods,
-		AllowedHeaders:   c.AllowedHeaders,
-		ExposedHeaders:   c.ExposedHeaders,
-		AllowCredentials: c.AllowCredentials,
-		MaxAge:           c.MaxAge,
+		Options: cors.Options{
+			AllowedOrigins:   origins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
+			ExposedHeaders:   []string{"Link", "X-Request-ID"},
+			AllowCredentials: true,
+			MaxAge:           300,
+		},
 	}
 }
 
@@ -212,9 +199,9 @@ func WithOTEL(cfg observability.OTELConfig) Option {
 // sets AllowCredentials to true, which is incompatible with "*" per the
 // CORS spec. Use WithCORSConfig with AllowCredentials: false if you need
 // a wildcard origin.
-func WithCORS(origins ...string) Option {
+func WithCORS(first string, rest ...string) Option {
 	return func(b *builder) error {
-		cfg := corsDefaults(origins)
+		cfg := corsDefaults(first, rest...)
 		if err := cfg.validate(); err != nil {
 			return err
 		}
