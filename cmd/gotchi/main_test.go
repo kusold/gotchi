@@ -469,18 +469,25 @@ func TestMigrationsExportIdempotentUnchanged(t *testing.T) {
 	}
 }
 
-func TestMigrationsExportConflictErrors(t *testing.T) {
-	tmp := t.TempDir()
-
-	// Create a file that will conflict
-	coreDir := filepath.Join(tmp, "core")
+// createConflict sets up a temp directory with a core migration file containing
+// content that differs from the embedded version, returning the temp dir and the
+// conflict file path.
+func createConflict(t *testing.T) (tmpDir string, conflictPath string) {
+	t.Helper()
+	tmpDir = t.TempDir()
+	coreDir := filepath.Join(tmpDir, "core")
 	if err := os.MkdirAll(coreDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	conflictPath := filepath.Join(coreDir, "20260221160000_core.sql")
+	conflictPath = filepath.Join(coreDir, "20260221160000_core.sql")
 	if err := os.WriteFile(conflictPath, []byte("different content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return tmpDir, conflictPath
+}
+
+func TestMigrationsExportConflictErrors(t *testing.T) {
+	tmp, _ := createConflict(t)
 
 	err := runMigrationsExport([]string{"--output", tmp})
 	if err == nil {
@@ -492,17 +499,7 @@ func TestMigrationsExportConflictErrors(t *testing.T) {
 }
 
 func TestMigrationsExportForceOverwrites(t *testing.T) {
-	tmp := t.TempDir()
-
-	// Create conflicting file
-	coreDir := filepath.Join(tmp, "core")
-	if err := os.MkdirAll(coreDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	conflictPath := filepath.Join(coreDir, "20260221160000_core.sql")
-	if err := os.WriteFile(conflictPath, []byte("old content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmp, conflictPath := createConflict(t)
 
 	err := runMigrationsExport([]string{"--output", tmp, "--force"})
 	if err != nil {
@@ -513,23 +510,13 @@ func TestMigrationsExportForceOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) == "old content" {
+	if string(data) == "different content" {
 		t.Error("expected file to be overwritten with embedded content")
 	}
 }
 
 func TestMigrationsExportSkipConflicts(t *testing.T) {
-	tmp := t.TempDir()
-
-	// Create conflicting file
-	coreDir := filepath.Join(tmp, "core")
-	if err := os.MkdirAll(coreDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	conflictPath := filepath.Join(coreDir, "20260221160000_core.sql")
-	if err := os.WriteFile(conflictPath, []byte("old content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmp, conflictPath := createConflict(t)
 
 	err := runMigrationsExport([]string{"--output", tmp, "--skip"})
 	if err != nil {
@@ -540,7 +527,7 @@ func TestMigrationsExportSkipConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "old content" {
+	if string(data) != "different content" {
 		t.Error("expected conflicting file to be preserved when using --skip")
 	}
 }
