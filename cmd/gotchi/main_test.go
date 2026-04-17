@@ -1,10 +1,13 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kusold/gotchi/migrations"
 )
 
 // ============================================================================
@@ -367,6 +370,231 @@ func TestRunDoctorInvalidFlag(t *testing.T) {
 	err := runDoctor([]string{"--invalid"})
 	if err == nil {
 		t.Fatal("expected error for invalid flag")
+	}
+}
+
+// ============================================================================
+// runMigrations tests
+// ============================================================================
+
+func TestRunMigrationsNoArgs(t *testing.T) {
+	err := runMigrations([]string{})
+	if err == nil {
+		t.Fatal("expected error for no args")
+	}
+	if !strings.Contains(err.Error(), "usage:") {
+		t.Errorf("expected usage error, got: %v", err)
+	}
+}
+
+func TestRunMigrationsUnknownSubcommand(t *testing.T) {
+	err := runMigrations([]string{"import"})
+	if err == nil {
+		t.Fatal("expected error for unknown subcommand")
+	}
+	if !strings.Contains(err.Error(), "unknown migrations subcommand") {
+		t.Errorf("expected unknown subcommand error, got: %v", err)
+	}
+}
+
+// ============================================================================
+// runMigrationsExport tests
+// ============================================================================
+
+func TestMigrationsExportAll(t *testing.T) {
+	tmp := t.TempDir()
+	err := runMigrationsExport([]string{"--output", tmp})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have core/ and auth/ subdirectories with SQL files
+	coreFiles, _ := filepath.Glob(filepath.Join(tmp, "core", "*.sql"))
+	authFiles, _ := filepath.Glob(filepath.Join(tmp, "auth", "*.sql"))
+	if len(coreFiles) == 0 {
+		t.Error("expected at least one core migration file")
+	}
+	if len(authFiles) == 0 {
+		t.Error("expected at least one auth migration file")
+	}
+}
+
+func TestMigrationsExportComponentCore(t *testing.T) {
+	tmp := t.TempDir()
+	err := runMigrationsExport([]string{"--output", tmp, "--component", "core"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	coreFiles, _ := filepath.Glob(filepath.Join(tmp, "core", "*.sql"))
+	if len(coreFiles) == 0 {
+		t.Error("expected core migration files")
+	}
+
+	// auth directory should not exist
+	if _, err := os.Stat(filepath.Join(tmp, "auth")); !os.IsNotExist(err) {
+		t.Error("auth directory should not exist when --component=core")
+	}
+}
+
+func TestMigrationsExportComponentAuth(t *testing.T) {
+	tmp := t.TempDir()
+	err := runMigrationsExport([]string{"--output", tmp, "--component", "auth"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	authFiles, _ := filepath.Glob(filepath.Join(tmp, "auth", "*.sql"))
+	if len(authFiles) == 0 {
+		t.Error("expected auth migration files")
+	}
+
+	// core directory should not exist
+	if _, err := os.Stat(filepath.Join(tmp, "core")); !os.IsNotExist(err) {
+		t.Error("core directory should not exist when --component=auth")
+	}
+}
+
+func TestMigrationsExportIdempotentUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+
+	// First export
+	if err := runMigrationsExport([]string{"--output", tmp}); err != nil {
+		t.Fatalf("first export: %v", err)
+	}
+
+	// Second export should succeed and report unchanged
+	if err := runMigrationsExport([]string{"--output", tmp}); err != nil {
+		t.Fatalf("second export: %v", err)
+	}
+}
+
+func TestMigrationsExportConflictErrors(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create a file that will conflict
+	coreDir := filepath.Join(tmp, "core")
+	if err := os.MkdirAll(coreDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conflictPath := filepath.Join(coreDir, "20260221160000_core.sql")
+	if err := os.WriteFile(conflictPath, []byte("different content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runMigrationsExport([]string{"--output", tmp})
+	if err == nil {
+		t.Fatal("expected error for conflicting file")
+	}
+	if !strings.Contains(err.Error(), "already exists with different content") {
+		t.Errorf("expected conflict error, got: %v", err)
+	}
+}
+
+func TestMigrationsExportForceOverwrites(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create conflicting file
+	coreDir := filepath.Join(tmp, "core")
+	if err := os.MkdirAll(coreDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conflictPath := filepath.Join(coreDir, "20260221160000_core.sql")
+	if err := os.WriteFile(conflictPath, []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runMigrationsExport([]string{"--output", tmp, "--force"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(conflictPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "old content" {
+		t.Error("expected file to be overwritten with embedded content")
+	}
+}
+
+func TestMigrationsExportSkipConflicts(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create conflicting file
+	coreDir := filepath.Join(tmp, "core")
+	if err := os.MkdirAll(coreDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conflictPath := filepath.Join(coreDir, "20260221160000_core.sql")
+	if err := os.WriteFile(conflictPath, []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runMigrationsExport([]string{"--output", tmp, "--skip"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(conflictPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old content" {
+		t.Error("expected conflicting file to be preserved when using --skip")
+	}
+}
+
+func TestMigrationsExportForceAndSkipRejected(t *testing.T) {
+	err := runMigrationsExport([]string{"--force", "--skip"})
+	if err == nil {
+		t.Fatal("expected error for --force and --skip together")
+	}
+	if !strings.Contains(err.Error(), "cannot use both --force and --skip") {
+		t.Errorf("expected mutual exclusion error, got: %v", err)
+	}
+}
+
+func TestMigrationsExportInvalidComponent(t *testing.T) {
+	err := runMigrationsExport([]string{"--component", "bogus"})
+	if err == nil {
+		t.Fatal("expected error for invalid component")
+	}
+	if !strings.Contains(err.Error(), "invalid --component value") {
+		t.Errorf("expected invalid component error, got: %v", err)
+	}
+}
+
+func TestMigrationsExportShortOutputFlag(t *testing.T) {
+	tmp := t.TempDir()
+	err := runMigrationsExport([]string{"-o", tmp})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	coreFiles, _ := filepath.Glob(filepath.Join(tmp, "core", "*.sql"))
+	if len(coreFiles) == 0 {
+		t.Error("expected migration files with -o shorthand")
+	}
+}
+
+func TestMigrationsExportOutputMatchesEmbedded(t *testing.T) {
+	tmp := t.TempDir()
+	if err := runMigrationsExport([]string{"--output", tmp, "--component", "core"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read the embedded content directly and compare with exported file
+	embedded, err := fs.ReadFile(migrations.Core(), "20260221160000_core.sql")
+	if err != nil {
+		t.Fatalf("reading embedded file: %v", err)
+	}
+	exported, err := os.ReadFile(filepath.Join(tmp, "core", "20260221160000_core.sql"))
+	if err != nil {
+		t.Fatalf("reading exported file: %v", err)
+	}
+	if string(embedded) != string(exported) {
+		t.Error("exported file content does not match embedded content")
 	}
 }
 
