@@ -1,14 +1,17 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/kusold/gotchi/internal/scaffold"
+	"github.com/kusold/gotchi/migrations"
 )
 
 func main() {
@@ -25,6 +28,8 @@ func main() {
 		err = runAdd(os.Args[2:])
 	case "doctor":
 		err = runDoctor(os.Args[2:])
+	case "migrations":
+		err = runMigrations(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 		return
@@ -167,4 +172,106 @@ func printUsage() {
 	fmt.Println("  gotchi init <app-name> [--module <module>] [--output <dir>]")
 	fmt.Println("  gotchi add feature <name>")
 	fmt.Println("  gotchi doctor [--root <project-dir>]")
+	fmt.Println("  gotchi migrations export [--output <dir>] [--force|--skip] [--component core|auth|all]")
+}
+
+func runMigrations(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: gotchi migrations <subcommand>\n\nsubcommands:\n  export  Copy embedded migration SQL files to the local filesystem")
+	}
+	switch args[0] {
+	case "export":
+		return runMigrationsExport(args[1:])
+	default:
+		return fmt.Errorf("unknown migrations subcommand: %s", args[0])
+	}
+}
+
+func runMigrationsExport(args []string) error {
+	flags := flag.NewFlagSet("migrations export", flag.ContinueOnError)
+	outputDir := flags.String("output", "migrations/gotchi", "Target directory for exported migration files")
+	force := flags.Bool("force", false, "Overwrite existing files without prompting")
+	skip := flags.Bool("skip", false, "Skip existing files without prompting")
+	component := flags.String("component", "all", "Which migrations to export: core, auth, or all")
+	flags.StringVar(outputDir, "o", *outputDir, "Shorthand for --output")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	if *force && *skip {
+		return errors.New("cannot use both --force and --skip")
+	}
+
+	switch *component {
+	case "core", "auth", "all":
+		// valid
+	default:
+		return fmt.Errorf("invalid --component value %q; must be core, auth, or all", *component)
+	}
+
+	type migrationSource struct {
+		name string
+		fsys fs.FS
+	}
+	var sources []migrationSource
+	if *component == "all" || *component == "core" {
+		sources = append(sources, migrationSource{"core", migrations.Core()})
+	}
+	if *component == "all" || *component == "auth" {
+		sources = append(sources, migrationSource{"auth", migrations.Auth()})
+	}
+
+	var copied, skipped, unchanged int
+
+	for _, src := range sources {
+		entries, err := fs.ReadDir(src.fsys, ".")
+		if err != nil {
+			return fmt.Errorf("reading embedded %s migrations: %w", src.name, err)
+		}
+
+		targetDir := filepath.Join(*outputDir, src.name)
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			return fmt.Errorf("creating directory %s: %w", targetDir, err)
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+
+			embeddedContent, err := fs.ReadFile(src.fsys, entry.Name())
+			if err != nil {
+				return fmt.Errorf("reading embedded file %s/%s: %w", src.name, entry.Name(), err)
+			}
+
+			targetPath := filepath.Join(targetDir, entry.Name())
+
+			existingContent, err := os.ReadFile(targetPath)
+			if err == nil {
+				// File already exists
+				if sha256.Sum256(existingContent) == sha256.Sum256(embeddedContent) {
+					unchanged++
+					continue
+				}
+
+				if *skip {
+					skipped++
+					continue
+				}
+
+				if !*force {
+					return fmt.Errorf("file %s already exists with different content (use --force to overwrite or --skip to skip)", targetPath)
+				}
+				// --force: fall through to overwrite
+			}
+
+			if err := os.WriteFile(targetPath, embeddedContent, 0o644); err != nil {
+				return fmt.Errorf("writing %s: %w", targetPath, err)
+			}
+			copied++
+		}
+	}
+
+	fmt.Printf("migrations export complete: %d copied, %d skipped, %d unchanged\n", copied, skipped, unchanged)
+	return nil
 }
