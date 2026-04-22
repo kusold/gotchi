@@ -18,6 +18,11 @@ SELECT id, email, email_verified, username, name, issuer, identifier_subject, la
 FROM users
 WHERE email = $1 AND issuer = $2;
 
+-- name: GetUserByID :one
+SELECT id, email, email_verified, username, name, issuer, identifier_subject, last_login_at, created_at, updated_at
+FROM users
+WHERE id = $1;
+
 -- name: RecordLoginAttempt :exec
 INSERT INTO login_attempts (user_id, ip_address, success)
 VALUES ($1, $2, $3);

@@ -322,27 +322,6 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 		}
 	}
 
-	// Transparent rehash if needed
-	if needsRehash {
-		newHash, hashErr := s.hasher.Hash(password)
-		if hashErr != nil {
-			s.logger.Error("failed to rehash password",
-				"user_id", user.ID,
-				"error", hashErr,
-			)
-		} else {
-			if updateErr := txQueries.UpdatePasswordHash(ctx, db.UpdatePasswordHashParams{
-				UserID:       user.ID,
-				PasswordHash: newHash,
-			}); updateErr != nil {
-				s.logger.Error("failed to update rehashed password",
-					"user_id", user.ID,
-					"error", updateErr,
-				)
-			}
-		}
-	}
-
 	// Update last login
 	if updateErr := txQueries.UpdateLastLoginAt(ctx, user.ID); updateErr != nil {
 		s.logger.Error("failed to update last login time",
@@ -351,8 +330,36 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 		)
 	}
 
-	if commitErr := tx.Commit(ctx); commitErr != nil {
-		return auth.UserRef{}, fmt.Errorf("failed to commit transaction: %w", commitErr)
+	// Commit the login attempt + last_login update before the expensive
+	// rehash so the transaction doesn't hold a DB lock during Argon2id.
+	if needsRehash {
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return auth.UserRef{}, fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+
+		// Rehash outside the transaction — Argon2id is CPU-bound and
+		// should not hold a database connection.
+		newHash, hashErr := s.hasher.Hash(password)
+		if hashErr != nil {
+			s.logger.Error("failed to rehash password",
+				"user_id", user.ID,
+				"error", hashErr,
+			)
+			// Rehash failure is non-fatal; login still succeeds.
+		} else if updateErr := s.queries.UpdatePasswordHash(ctx, db.UpdatePasswordHashParams{
+			UserID:       user.ID,
+			PasswordHash: newHash,
+		}); updateErr != nil {
+			s.logger.Error("failed to update rehashed password",
+				"user_id", user.ID,
+				"error", updateErr,
+			)
+		}
+		// tx.Rollback was deferred but tx is already committed, so it's a no-op.
+	} else {
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return auth.UserRef{}, fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
 	}
 
 	s.logger.Info("password login succeeded",
@@ -385,8 +392,19 @@ func (s *PasswordIdentityStore) ChangePassword(ctx context.Context, userID uuid.
 		return &PasswordError{Err: ErrInvalidCredentials, Status: 401}
 	}
 
+	// Look up user to provide context words (email, username) for policy validation.
+	user, err := s.queries.GetUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch user: %w", err)
+	}
+
+	contextWords := []string{user.Email}
+	if user.Username.Valid && user.Username.String != "" {
+		contextWords = append(contextWords, user.Username.String)
+	}
+
 	// Validate new password policy
-	if policyErr := s.cfg.Policy.Validate(newPassword); policyErr != nil {
+	if policyErr := s.cfg.Policy.Validate(newPassword, contextWords...); policyErr != nil {
 		return policyErr
 	}
 
@@ -477,8 +495,19 @@ func (s *PasswordIdentityStore) CompletePasswordReset(ctx context.Context, token
 		return fmt.Errorf("failed to consume token: %w", err)
 	}
 
+	// Look up user to provide context words (email, username) for policy validation.
+	user, err := s.queries.GetUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch user: %w", err)
+	}
+
+	contextWords := []string{user.Email}
+	if user.Username.Valid && user.Username.String != "" {
+		contextWords = append(contextWords, user.Username.String)
+	}
+
 	// Validate the new password
-	if policyErr := s.cfg.Policy.Validate(newPassword); policyErr != nil {
+	if policyErr := s.cfg.Policy.Validate(newPassword, contextWords...); policyErr != nil {
 		return policyErr
 	}
 
