@@ -32,7 +32,7 @@ import (
 // migrationFS holds the embedded SQL migration files from the core/ and auth/
 // subdirectories. The go:embed directive includes all .sql files at build time.
 //
-//go:embed core/*.sql auth/*.sql
+//go:embed core/*.sql auth/*.sql password/*.sql
 var migrationFS embed.FS
 
 // subFS returns a sub-filesystem rooted at dir within migrationFS.
@@ -56,4 +56,11 @@ func Core() fs.FS {
 // related auth schema extensions.
 func Auth() fs.FS {
 	return subFS("auth")
+}
+
+// Password returns the embedded filesystem containing password authentication
+// database migrations. These migrations create password credentials, login
+// attempt tracking, and auth token tables.
+func Password() fs.FS {
+	return subFS("password")
 }

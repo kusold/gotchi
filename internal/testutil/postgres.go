@@ -117,6 +117,10 @@ func runMigrations(ctx context.Context, databaseURL string) error {
 		FS:  migrations.Auth(),
 		Dir: ".",
 	})
+	mgr.AddMigrationSource(db.MigrationSource{
+		FS:  migrations.Password(),
+		Dir: ".",
+	})
 
 	if err := mgr.Connect(ctx); err != nil {
 		return fmt.Errorf("could not connect: %w", err)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/cors"
 	"github.com/kusold/gotchi/auth"
+	"github.com/kusold/gotchi/auth/password"
 	"github.com/kusold/gotchi/db"
 	"github.com/kusold/gotchi/observability"
 	"github.com/kusold/gotchi/openapi"
@@ -52,9 +53,10 @@ type builder struct {
 	sessionConfig *session.Config
 
 	// auth (optional, auto-enables sessions)
-	authConfig    *auth.Config
-	identityStore auth.IdentityStore
-	loginHandler  http.HandlerFunc
+	authConfig      *auth.Config
+	identityStore   auth.IdentityStore
+	loginHandler    http.HandlerFunc
+	passwordConfig  *password.PasswordConfig
 
 	// observability (optional)
 	otelConfig *observability.OTELConfig
@@ -66,9 +68,10 @@ type builder struct {
 	openAPIConfig *openapi.Config
 
 	// migrations
-	migrationSources     []db.MigrationSource
-	enableCoreMigrations bool
-	enableAuthMigrations bool
+	migrationSources          []db.MigrationSource
+	enableCoreMigrations      bool
+	enableAuthMigrations      bool
+	enablePasswordMigrations  bool
 
 	// middleware
 	middleware               []func(http.Handler) http.Handler
@@ -105,6 +108,14 @@ func (b *builder) applyDefaults() {
 		defaults := b.authConfig.WithDefaults()
 		b.authConfig = &defaults
 		// Auto-enable sessions when auth is configured
+		if b.sessionConfig == nil {
+			b.sessionConfig = &session.Config{}
+		}
+	}
+	if b.passwordConfig != nil {
+		defaults := b.passwordConfig.WithDefaults()
+		b.passwordConfig = &defaults
+		// Auto-enable sessions when password auth is configured
 		if b.sessionConfig == nil {
 			b.sessionConfig = &session.Config{}
 		}
@@ -159,6 +170,17 @@ func WithAuth(cfg auth.Config) Option {
 func WithIdentityStore(store auth.IdentityStore) Option {
 	return func(b *builder) error {
 		b.identityStore = store
+		return nil
+	}
+}
+
+// WithPasswordAuth enables username/password authentication with the provided
+// configuration. The Enabled field on the config is ignored — calling
+// WithPasswordAuth is the signal that password auth should be enabled. Sessions
+// are automatically enabled with default settings if not explicitly configured.
+func WithPasswordAuth(cfg password.PasswordConfig) Option {
+	return func(b *builder) error {
+		b.passwordConfig = &cfg
 		return nil
 	}
 }
@@ -258,6 +280,15 @@ func WithCoreMigrations() Option {
 func WithAuthMigrations() Option {
 	return func(b *builder) error {
 		b.enableAuthMigrations = true
+		return nil
+	}
+}
+
+// WithPasswordMigrations enables the built-in password schema migrations
+// (password_credentials, login_attempts, auth_tokens tables).
+func WithPasswordMigrations() Option {
+	return func(b *builder) error {
+		b.enablePasswordMigrations = true
 		return nil
 	}
 }

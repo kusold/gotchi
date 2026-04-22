@@ -80,6 +80,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kusold/gotchi/auth"
+	"github.com/kusold/gotchi/auth/password"
 	"github.com/kusold/gotchi/db"
 	"github.com/kusold/gotchi/migrations"
 	"github.com/kusold/gotchi/observability"
@@ -136,6 +137,10 @@ type Dependencies struct {
 	// Auth is the OpenID Connect handler, or nil when OIDC is disabled in
 	// the configuration.
 	Auth *auth.OIDCHandler
+
+	// Password is the password authentication handler, or nil when password
+	// auth is disabled in the configuration.
+	Password *password.PasswordHandler
 
 	// IdentityStore provides user identity lookup and persistence. It is
 	// non-nil only when OIDC authentication is enabled.
@@ -236,6 +241,9 @@ func (a *Application) Run(ctx context.Context) error {
 	if cfg.enableAuthMigrations {
 		a.db.AddMigrationSource(db.MigrationSource{FS: migrations.Auth(), Dir: "."})
 	}
+	if cfg.enablePasswordMigrations {
+		a.db.AddMigrationSource(db.MigrationSource{FS: migrations.Password(), Dir: "."})
+	}
 	for _, source := range cfg.migrationSources {
 		a.db.AddMigrationSource(source)
 	}
@@ -272,6 +280,27 @@ func (a *Application) Run(ctx context.Context) error {
 		oidcHandler = handler
 	}
 
+	// --- Password Auth Handler ---
+	var passwordHandler *password.PasswordHandler
+	if cfg.passwordConfig != nil && cfg.passwordConfig.Enabled {
+		if identityStore == nil {
+			var err error
+			identityStore, err = auth.NewPostgresIdentityStore(a.db.Pool(), auth.PostgresStoreConfig{})
+			if err != nil {
+				return fmt.Errorf("failed to create identity store: %w", err)
+			}
+		}
+		pgStore, ok := identityStore.(*auth.PostgresIdentityStore)
+		if !ok {
+			return fmt.Errorf("password auth requires a PostgresIdentityStore")
+		}
+		pwStore, err := password.NewPasswordIdentityStore(a.db.Pool(), pgStore, *cfg.passwordConfig, cfg.logger)
+		if err != nil {
+			return fmt.Errorf("failed to create password identity store: %w", err)
+		}
+		passwordHandler = password.NewPasswordHandler(*cfg.passwordConfig, pwStore, sessionManager)
+	}
+
 	// --- Dependencies ---
 	var oaCfg openapi.Config
 	if cfg.openAPIConfig != nil {
@@ -283,6 +312,7 @@ func (a *Application) Run(ctx context.Context) error {
 		Pool:          a.db.Pool(),
 		Session:       sessionManager,
 		Auth:          oidcHandler,
+		Password:      passwordHandler,
 		IdentityStore: identityStore,
 		OpenAPI:       oaCfg,
 		Logger:        cfg.logger,
@@ -301,6 +331,13 @@ func (a *Application) Run(ctx context.Context) error {
 				r.Get("/login", defaultLoginHandler)
 			}
 			oidcHandler.RegisterRoutes(r)
+		})
+	}
+
+	// --- Password routes ---
+	if passwordHandler != nil {
+		a.router.Route(cfg.passwordConfig.PathPrefix, func(r chi.Router) {
+			passwordHandler.RegisterRoutes(r)
 		})
 	}
 
