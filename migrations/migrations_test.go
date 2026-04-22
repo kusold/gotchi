@@ -13,6 +13,7 @@ func TestMigrationFSReturnsValidFS(t *testing.T) {
 	}{
 		{"Core", Core},
 		{"Auth", Auth},
+		{"Password", Password},
 	}
 
 	for _, tt := range tests {
@@ -47,6 +48,7 @@ func TestMigrationFSFilesReadable(t *testing.T) {
 	}{
 		{"Core", Core},
 		{"Auth", Auth},
+		{"Password", Password},
 	}
 
 	for _, tt := range tests {

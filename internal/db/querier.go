@@ -11,14 +11,27 @@ import (
 )
 
 type Querier interface {
+	ConsumeAuthToken(ctx context.Context, arg ConsumeAuthTokenParams) (uuid.UUID, error)
+	CountRecentFailedAttempts(ctx context.Context, arg CountRecentFailedAttemptsParams) (int64, error)
+	DeletePasswordCredential(ctx context.Context, userID uuid.UUID) error
 	GetFirstTenant(ctx context.Context) (uuid.UUID, error)
 	GetMembershipByUserAndTenant(ctx context.Context, arg GetMembershipByUserAndTenantParams) (GetMembershipByUserAndTenantRow, error)
+	// Password authentication queries for sqlc code generation.
+	GetPasswordCredential(ctx context.Context, userID uuid.UUID) (PasswordCredential, error)
 	GetTenantByID(ctx context.Context, tenantID uuid.UUID) (GetTenantByIDRow, error)
+	GetUserByEmailAndIssuer(ctx context.Context, arg GetUserByEmailAndIssuerParams) (User, error)
 	GetUserByIdentifier(ctx context.Context, arg GetUserByIdentifierParams) (GetUserByIdentifierRow, error)
+	InsertAuthToken(ctx context.Context, arg InsertAuthTokenParams) error
 	InsertTenant(ctx context.Context, arg InsertTenantParams) error
 	InsertUser(ctx context.Context, arg InsertUserParams) (InsertUserRow, error)
+	InvalidateUserTokens(ctx context.Context, arg InvalidateUserTokensParams) error
 	ListMemberships(ctx context.Context, userID uuid.UUID) ([]ListMembershipsRow, error)
+	RecordLoginAttempt(ctx context.Context, arg RecordLoginAttemptParams) error
+	UpdateEmailVerified(ctx context.Context, id uuid.UUID) error
+	UpdateLastLoginAt(ctx context.Context, id uuid.UUID) error
+	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error
 	UpsertMembership(ctx context.Context, arg UpsertMembershipParams) (UpsertMembershipRow, error)
+	UpsertPasswordCredential(ctx context.Context, arg UpsertPasswordCredentialParams) error
 }
 
 var _ Querier = (*Queries)(nil)

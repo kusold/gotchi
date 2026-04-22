@@ -5,11 +5,38 @@
 package db
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type AuthToken struct {
+	ID         uuid.UUID          `json:"id"`
+	UserID     uuid.UUID          `json:"user_id"`
+	TokenHash  []byte             `json:"token_hash"`
+	TokenType  string             `json:"token_type"`
+	ExpiresAt  time.Time          `json:"expires_at"`
+	ConsumedAt pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt  time.Time          `json:"created_at"`
+}
+
+type LoginAttempt struct {
+	ID          uuid.UUID   `json:"id"`
+	UserID      uuid.UUID   `json:"user_id"`
+	AttemptedAt time.Time   `json:"attempted_at"`
+	IpAddress   *netip.Addr `json:"ip_address"`
+	Success     bool        `json:"success"`
+}
+
+type PasswordCredential struct {
+	UserID        uuid.UUID `json:"user_id"`
+	PasswordHash  string    `json:"password_hash"`
+	HashAlgorithm string    `json:"hash_algorithm"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
 
 type Session struct {
 	Token  string    `json:"token"`
