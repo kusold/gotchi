@@ -282,7 +282,7 @@ func (a *Application) Run(ctx context.Context) error {
 
 	// --- Password Auth Handler ---
 	var passwordHandler *password.PasswordHandler
-	if cfg.passwordConfig != nil && cfg.passwordConfig.Enabled {
+	if cfg.passwordConfig != nil {
 		if identityStore == nil {
 			var err error
 			identityStore, err = auth.NewPostgresIdentityStore(a.db.Pool(), auth.PostgresStoreConfig{})

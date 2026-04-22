@@ -352,3 +352,28 @@ func TestEmailVerification_InvalidToken(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrTokenInvalid))
 }
+
+func TestAuthenticate_LockoutAfterFailedAttempts(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestPasswordStore(t)
+	email := uniqueEmail(t)
+	correctPassword := "correct-password-123"
+
+	_, err := store.Register(ctx, RegisterRequest{
+		Email:    email,
+		Password: correctPassword,
+	})
+	require.NoError(t, err)
+
+	// MaxAttempts is 3 in test config. Fail 3 times.
+	for i := 0; i < 3; i++ {
+		_, err = store.Authenticate(ctx, email, "wrong-password", "127.0.0.1")
+		require.Error(t, err, "attempt %d should fail", i+1)
+		assert.True(t, errors.Is(err, ErrInvalidCredentials))
+	}
+
+	// The 4th attempt should be locked out even with the correct password.
+	_, err = store.Authenticate(ctx, email, correctPassword, "127.0.0.1")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAccountLocked), "should be locked out after %d failed attempts, got: %v", 3, err)
+}
