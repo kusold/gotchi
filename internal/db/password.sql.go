@@ -115,6 +115,30 @@ func (q *Queries) GetUserByEmailAndIssuer(ctx context.Context, arg GetUserByEmai
 	return i, err
 }
 
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, email, email_verified, username, name, issuer, identifier_subject, last_login_at, created_at, updated_at
+FROM users
+WHERE id = $1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.EmailVerified,
+		&i.Username,
+		&i.Name,
+		&i.Issuer,
+		&i.IdentifierSubject,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertAuthToken = `-- name: InsertAuthToken :exec
 INSERT INTO auth_tokens (user_id, token_hash, token_type, expires_at)
 VALUES ($1, $2, $3, $4)

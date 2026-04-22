@@ -20,6 +20,7 @@ type Querier interface {
 	GetPasswordCredential(ctx context.Context, userID uuid.UUID) (PasswordCredential, error)
 	GetTenantByID(ctx context.Context, tenantID uuid.UUID) (GetTenantByIDRow, error)
 	GetUserByEmailAndIssuer(ctx context.Context, arg GetUserByEmailAndIssuerParams) (User, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIdentifier(ctx context.Context, arg GetUserByIdentifierParams) (GetUserByIdentifierRow, error)
 	InsertAuthToken(ctx context.Context, arg InsertAuthTokenParams) error
 	InsertTenant(ctx context.Context, arg InsertTenantParams) error
