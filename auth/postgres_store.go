@@ -29,6 +29,17 @@ type PostgresIdentityStore struct {
 	cfg     PostgresStoreConfig
 }
 
+// WithTx returns a copy of the store that runs all queries within the given
+// transaction. This allows callers to include user/tenant operations in a
+// larger atomic transaction.
+func (s *PostgresIdentityStore) WithTx(tx pgx.Tx) *PostgresIdentityStore {
+	return &PostgresIdentityStore{
+		pool:    s.pool,
+		queries: s.queries.WithTx(tx),
+		cfg:     s.cfg,
+	}
+}
+
 // NewPostgresIdentityStore creates a new PostgreSQL-backed identity store.
 // The pool must be connected to a database with the auth schema migrations
 // applied.
