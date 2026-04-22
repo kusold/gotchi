@@ -237,6 +237,10 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 	}
 
 	if IsLockedOut(int(failedCount), s.cfg.Lockout) {
+		// Timing mitigation: perform a dummy hash so that response time for a
+		// locked account is indistinguishable from a wrong-password attempt,
+		// preventing timing-based account enumeration.
+		_, _ = s.hasher.Hash("dummy-password-for-timing")
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrAccountLocked,
 			Status: 423,

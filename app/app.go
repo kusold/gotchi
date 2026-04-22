@@ -163,11 +163,11 @@ type Application struct {
 	config builder
 
 	// runtime state
-	router         *chi.Mux
-	db             *db.Manager
-	dependencies   Dependencies
-	resolvedOTEL   *observability.OTELConfig
-	otelShutdown   func(context.Context) error
+	router       *chi.Mux
+	db           *db.Manager
+	dependencies Dependencies
+	resolvedOTEL *observability.OTELConfig
+	otelShutdown func(context.Context) error
 }
 
 // New creates an Application from the supplied options.
@@ -290,6 +290,10 @@ func (a *Application) Run(ctx context.Context) error {
 				return fmt.Errorf("failed to create identity store: %w", err)
 			}
 		}
+		// Password auth is tightly coupled to PostgresIdentityStore because it
+		// needs direct access to the underlying pg pool for password-specific
+		// queries. A custom identity store set via WithIdentityStore is
+		// unsupported and will cause startup to fail here.
 		pgStore, ok := identityStore.(*auth.PostgresIdentityStore)
 		if !ok {
 			return fmt.Errorf("password auth requires a PostgresIdentityStore")

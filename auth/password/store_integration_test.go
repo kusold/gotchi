@@ -59,7 +59,6 @@ func newTestPasswordStore(t *testing.T) (*PasswordIdentityStore, *auth.PostgresI
 	require.NoError(t, err)
 
 	cfg := PasswordConfig{
-		Enabled: true,
 		Hashing: HashingConfig{
 			Memory:      4096, // lower for test speed
 			Iterations:  1,
@@ -208,7 +207,6 @@ func TestAuthenticate_TransparentRehash(t *testing.T) {
 
 	// Create a new store with different hash params to trigger rehash
 	cfg := PasswordConfig{
-		Enabled: true,
 		Hashing: HashingConfig{
 			Memory:      8192, // different from original 4096
 			Iterations:  2,

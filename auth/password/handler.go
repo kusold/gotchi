@@ -3,6 +3,7 @@ package password
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -77,8 +78,8 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	UserID                 string `json:"user_id"`
-	TenantCount            int    `json:"tenant_count"`
+	UserID                  string `json:"user_id"`
+	TenantCount             int    `json:"tenant_count"`
 	TenantSelectionRequired bool   `json:"tenant_selection_required"`
 }
 
@@ -148,6 +149,13 @@ func (h *PasswordHandler) RegisterHandler(w http.ResponseWriter, r *http.Request
 }
 
 // LoginHandler authenticates a user and creates a session.
+//
+// IP address extraction: the handler first checks the X-Real-IP header, then
+// falls back to r.RemoteAddr. X-Real-IP should only be set by a trusted
+// upstream reverse proxy (nginx, Caddy, etc.). If the application is deployed
+// without a proxy, an attacker can forge X-Real-IP to spoof their IP address
+// and evade per-IP analysis. Consider stripping the header at the network
+// boundary if your deployment does not use a proxy.
 func (h *PasswordHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -155,9 +163,16 @@ func (h *PasswordHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// X-Real-IP is set by trusted reverse proxies; see handler doc for caveats.
+	// r.RemoteAddr is in "IP:port" form — strip the port when falling back.
 	ipAddress := r.Header.Get("X-Real-IP")
 	if ipAddress == "" {
-		ipAddress = r.RemoteAddr
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ipAddress = host
+		} else {
+			// r.RemoteAddr has no port (unusual but possible in tests); use as-is.
+			ipAddress = r.RemoteAddr
+		}
 	}
 
 	userRef, err := h.store.Authenticate(r.Context(), req.Email, req.Password, ipAddress)
@@ -200,18 +215,19 @@ func (h *PasswordHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 // LogoutHandler destroys the current session.
 func (h *PasswordHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
-	claims, ok := h.getSessionClaims(r)
+	_, ok := h.getSessionClaims(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "not authenticated")
 		return
 	}
 
-	// Clear the session
-	h.session.Put(r.Context(), h.cfg.SessionKey, auth.SessionClaims{
-		UserID:  claims.UserID,
-		Issuer:  claims.Issuer,
-		Subject: claims.Subject,
-	})
+	// Destroy the session entirely so the cookie token is immediately
+	// invalidated. A simple key-clear would leave the session record alive
+	// in the store and the token cookie still usable.
+	if err := h.session.Destroy(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to destroy session")
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -238,6 +254,16 @@ func (h *PasswordHandler) ChangePasswordHandler(w http.ResponseWriter, r *http.R
 	// Notify via email if sender is configured
 	if h.cfg.EmailSender != nil {
 		_ = h.cfg.EmailSender.SendPasswordChanged(r.Context(), claims.Subject)
+	}
+
+	// Destroy the current session so the user must re-authenticate with the
+	// new password. This also invalidates any other tab/device sharing this
+	// specific session token. Note: concurrent sessions on other devices are
+	// not affected without a server-side session revocation mechanism.
+	if err := h.session.Destroy(r.Context()); err != nil {
+		// Non-fatal: password was changed successfully; log and continue.
+		// The user will need to log in again on next request anyway.
+		_ = err
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "password changed successfully"})
@@ -268,7 +294,13 @@ func (h *PasswordHandler) ForgotPasswordHandler(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
-// ResetPasswordHandler completes a password reset using a token.
+// ResetPasswordHandler completes a password reset using a token. This is an
+// unauthenticated flow — the caller provides a one-time token rather than a
+// session. Existing sessions for the user are NOT automatically invalidated
+// because the handler has no session token for those devices. Implement a
+// server-side session revocation mechanism (e.g., a password_changed_at
+// timestamp checked on every request) if you need to force re-authentication
+// on all devices after a reset.
 func (h *PasswordHandler) ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req resetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -363,7 +395,7 @@ func errorString(err error) string {
 		return "email_already_registered"
 	case errors.Is(err, ErrEmailNotVerified):
 		return "email_not_verified"
-	case errors.Is(err, ErrTokenExpired), errors.Is(err, ErrTokenConsumed), errors.Is(err, ErrTokenInvalid):
+	case errors.Is(err, ErrTokenInvalid):
 		return "invalid_token"
 	case errors.Is(err, ErrUserNotFound):
 		return "user_not_found"
@@ -401,4 +433,3 @@ func init() {
 	// This is idempotent if auth package already registered it.
 	session.RegisterGobTypes(auth.SessionClaims{})
 }
-

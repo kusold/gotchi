@@ -53,10 +53,10 @@ type builder struct {
 	sessionConfig *session.Config
 
 	// auth (optional, auto-enables sessions)
-	authConfig      *auth.Config
-	identityStore   auth.IdentityStore
-	loginHandler    http.HandlerFunc
-	passwordConfig  *password.PasswordConfig
+	authConfig     *auth.Config
+	identityStore  auth.IdentityStore
+	loginHandler   http.HandlerFunc
+	passwordConfig *password.PasswordConfig
 
 	// observability (optional)
 	otelConfig *observability.OTELConfig
@@ -68,10 +68,10 @@ type builder struct {
 	openAPIConfig *openapi.Config
 
 	// migrations
-	migrationSources          []db.MigrationSource
-	enableCoreMigrations      bool
-	enableAuthMigrations      bool
-	enablePasswordMigrations  bool
+	migrationSources         []db.MigrationSource
+	enableCoreMigrations     bool
+	enableAuthMigrations     bool
+	enablePasswordMigrations bool
 
 	// middleware
 	middleware               []func(http.Handler) http.Handler
@@ -178,6 +178,10 @@ func WithIdentityStore(store auth.IdentityStore) Option {
 // configuration. The Enabled field on the config is ignored — calling
 // WithPasswordAuth is the signal that password auth should be enabled. Sessions
 // are automatically enabled with default settings if not explicitly configured.
+//
+// Note: password auth requires the default PostgresIdentityStore and is
+// incompatible with a custom identity store supplied via WithIdentityStore.
+// Combining both options will produce an error at startup.
 func WithPasswordAuth(cfg password.PasswordConfig) Option {
 	return func(b *builder) error {
 		b.passwordConfig = &cfg

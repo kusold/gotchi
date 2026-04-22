@@ -14,8 +14,6 @@ func TestSentinelErrors(t *testing.T) {
 		ErrPasswordPolicyViolation,
 		ErrEmailAlreadyRegistered,
 		ErrEmailNotVerified,
-		ErrTokenExpired,
-		ErrTokenConsumed,
 		ErrTokenInvalid,
 		ErrUserNotFound,
 	}
@@ -46,8 +44,8 @@ func TestPasswordError_Error(t *testing.T) {
 		},
 		{
 			name:    "does not match unrelated error",
-			err:     &PasswordError{Err: ErrTokenExpired, Status: 400},
-			want:    ErrTokenExpired.Error(),
+			err:     &PasswordError{Err: ErrTokenInvalid, Status: 400},
+			want:    ErrTokenInvalid.Error(),
 			wantNot: ErrInvalidCredentials,
 		},
 	}
@@ -65,8 +63,8 @@ func TestPasswordError_Error(t *testing.T) {
 }
 
 func TestPasswordError_Unwrap(t *testing.T) {
-	inner := ErrTokenConsumed
+	inner := ErrTokenInvalid
 	pe := &PasswordError{Err: inner, Status: 400}
 	assert.Equal(t, inner, pe.Unwrap())
-	assert.True(t, errors.Is(pe, ErrTokenConsumed))
+	assert.True(t, errors.Is(pe, ErrTokenInvalid))
 }
