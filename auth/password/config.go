@@ -116,17 +116,14 @@ func (c HashingConfig) withDefaults() HashingConfig {
 }
 
 // LockoutConfig configures account lockout behavior after failed login attempts.
+// Uses a sliding-window model: accounts are locked when failed attempts within
+// the Window reach MaxAttempts. The lockout clears when enough old failures age
+// out of the Window.
 type LockoutConfig struct {
 	// MaxAttempts before lockout. Default: 5.
 	MaxAttempts int
 	// Window is the time window for counting failed attempts. Default: 15 minutes.
 	Window time.Duration
-	// BaseLockout is the initial lockout duration. Default: 1 minute.
-	BaseLockout time.Duration
-	// MaxLockout is the maximum lockout duration. Default: 30 minutes.
-	MaxLockout time.Duration
-	// BackoffFactor for exponential backoff. Default: 2.0.
-	BackoffFactor float64
 }
 
 func (c LockoutConfig) withDefaults() LockoutConfig {
@@ -136,15 +133,6 @@ func (c LockoutConfig) withDefaults() LockoutConfig {
 	}
 	if cfg.Window == 0 {
 		cfg.Window = 15 * time.Minute
-	}
-	if cfg.BaseLockout == 0 {
-		cfg.BaseLockout = 1 * time.Minute
-	}
-	if cfg.MaxLockout == 0 {
-		cfg.MaxLockout = 30 * time.Minute
-	}
-	if cfg.BackoffFactor == 0 {
-		cfg.BackoffFactor = 2.0
 	}
 	return cfg
 }

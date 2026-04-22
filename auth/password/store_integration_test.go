@@ -68,11 +68,8 @@ func newTestPasswordStore(t *testing.T) (*PasswordIdentityStore, *auth.PostgresI
 			KeyLength:   16,
 		},
 		Lockout: LockoutConfig{
-			MaxAttempts:   3,
-			Window:        15 * time.Minute,
-			BaseLockout:   1 * time.Minute,
-			MaxLockout:    30 * time.Minute,
-			BackoffFactor: 2.0,
+			MaxAttempts: 3,
+			Window:      15 * time.Minute,
 		},
 	}
 

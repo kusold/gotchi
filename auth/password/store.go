@@ -83,11 +83,13 @@ func (s *PasswordIdentityStore) GetTenantDisplay(ctx context.Context, tenantID u
 
 // --- Password-specific operations ---
 
-// Register creates a new user with the given credentials. It creates the user
-// via the shared PostgresIdentityStore (which handles tenant provisioning) and
-// then stores the hashed password credential. Returns ErrEmailAlreadyRegistered
-// if a user with the same email and local issuer already has a password
-// credential.
+// Register creates a new user with the given credentials. The entire
+// operation — user lookup, creation, and credential storage — runs inside a
+// single database transaction so that a failure at any step rolls back cleanly
+// without leaving orphan records.
+//
+// Returns ErrEmailAlreadyRegistered if a user with the same email and local
+// issuer already has a password credential.
 func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterRequest) (auth.UserRef, error) {
 	if req.Email == "" || req.Password == "" {
 		return auth.UserRef{}, &PasswordError{
@@ -106,14 +108,31 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 		return auth.UserRef{}, err
 	}
 
+	// Hash the password before opening the transaction so the expensive Argon2id
+	// computation doesn't hold a database lock.
+	hash, err := s.hasher.Hash(req.Password)
+	if err != nil {
+		return auth.UserRef{}, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Begin a transaction so user creation + credential storage are atomic.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return auth.UserRef{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txQueries := s.queries.WithTx(tx)
+	txInner := s.inner.WithTx(tx)
+
 	// Check if a local user with this email already has a password credential
-	existingUser, err := s.queries.GetUserByEmailAndIssuer(ctx, db.GetUserByEmailAndIssuerParams{
+	existingUser, err := txQueries.GetUserByEmailAndIssuer(ctx, db.GetUserByEmailAndIssuerParams{
 		Email:  req.Email,
 		Issuer: s.cfg.Issuer,
 	})
 	if err == nil {
 		// User exists — check if they already have a password credential
-		_, credErr := s.queries.GetPasswordCredential(ctx, existingUser.ID)
+		_, credErr := txQueries.GetPasswordCredential(ctx, existingUser.ID)
 		if credErr == nil {
 			return auth.UserRef{}, &PasswordError{
 				Err:    ErrEmailAlreadyRegistered,
@@ -125,7 +144,7 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 		// Fall through to attach a password credential.
 	}
 
-	// Create user via shared identity store
+	// Create user via shared identity store (within the same transaction)
 	identity := auth.Identity{
 		Issuer:        s.cfg.Issuer,
 		Subject:       req.Email,
@@ -135,7 +154,7 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 		Name:          req.Name,
 	}
 
-	userRef, err := s.inner.ResolveOrProvisionUser(ctx, identity)
+	userRef, err := txInner.ResolveOrProvisionUser(ctx, identity)
 	if err != nil {
 		// Handle unique constraint violation from concurrent registration
 		var pgErr *pgconn.PgError
@@ -149,19 +168,18 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 		return auth.UserRef{}, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	// Hash and store the password
-	hash, err := s.hasher.Hash(req.Password)
-	if err != nil {
-		return auth.UserRef{}, fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	err = s.queries.UpsertPasswordCredential(ctx, db.UpsertPasswordCredentialParams{
+	// Store the password credential within the same transaction
+	err = txQueries.UpsertPasswordCredential(ctx, db.UpsertPasswordCredentialParams{
 		UserID:        userRef.UserID,
 		PasswordHash:  hash,
 		HashAlgorithm: "argon2id",
 	})
 	if err != nil {
 		return auth.UserRef{}, fmt.Errorf("failed to store credential: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return auth.UserRef{}, fmt.Errorf("failed to commit registration: %w", err)
 	}
 
 	s.logger.Info("password user registered",
@@ -174,7 +192,7 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 
 // Authenticate verifies the email/password combination and returns the user
 // reference on success. It implements timing attack mitigation for non-existent
-// users, progressive lockout, and transparent password rehashing.
+// users, sliding-window lockout, and transparent password rehashing.
 //
 // The lockout check, credential fetch, and login attempt recording run inside a
 // single database transaction to prevent concurrent attempts from racing past
@@ -218,7 +236,7 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 		return auth.UserRef{}, fmt.Errorf("failed to check lockout: %w", err)
 	}
 
-	if CalculateLockoutDuration(int(failedCount), s.cfg.Lockout) > 0 {
+	if IsLockedOut(int(failedCount), s.cfg.Lockout) {
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrAccountLocked,
 			Status: 423,
