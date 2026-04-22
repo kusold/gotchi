@@ -2,6 +2,7 @@ package password
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kusold/gotchi/auth"
@@ -135,6 +137,15 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 
 	userRef, err := s.inner.ResolveOrProvisionUser(ctx, identity)
 	if err != nil {
+		// Handle unique constraint violation from concurrent registration
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return auth.UserRef{}, &PasswordError{
+				Err:    ErrEmailAlreadyRegistered,
+				Status: 409,
+				Detail: "an account with this email already exists",
+			}
+		}
 		return auth.UserRef{}, fmt.Errorf("failed to create user: %w", err)
 	}
 
@@ -252,13 +263,21 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 				"error", recordErr,
 			)
 		}
+		// Commit so the failed attempt is persisted for lockout tracking.
+		// After Commit, the deferred Rollback is a no-op.
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			s.logger.Error("failed to commit failed login attempt",
+				"user_id", user.ID,
+				"error", commitErr,
+			)
+		}
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrInvalidCredentials,
 			Status: 401,
 		}
 	}
 
-	// Successful login
+	// Record successful login attempt
 	if recordErr := txQueries.RecordLoginAttempt(ctx, db.RecordLoginAttemptParams{
 		UserID:    user.ID,
 		IpAddress: ipAddr,
@@ -270,8 +289,15 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 		)
 	}
 
-	// Check email verification if required
+	// Check email verification if required. Commit the successful attempt
+	// first so the lockout window resets for this user.
 	if s.cfg.RequireEmailVerification && !user.EmailVerified {
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			s.logger.Error("failed to commit login attempt for unverified user",
+				"user_id", user.ID,
+				"error", commitErr,
+			)
+		}
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrEmailNotVerified,
 			Status: 403,
