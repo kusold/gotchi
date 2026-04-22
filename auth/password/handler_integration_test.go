@@ -101,6 +101,28 @@ func TestHandler_Register_MissingFields(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestHandler_Register_DuplicateEmail(t *testing.T) {
+	router, email := setupHandlerTest(t)
+
+	// First registration succeeds
+	w := doJSON(t, router, "POST", "/register", registerRequest{
+		Email:    email,
+		Password: "first-password-123",
+	})
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	// Second registration with the same email returns 409
+	w = doJSON(t, router, "POST", "/register", registerRequest{
+		Email:    email,
+		Password: "second-password-456",
+	})
+	assert.Equal(t, http.StatusConflict, w.Code)
+
+	var errResp errorResponse
+	decodeResponse(t, w, &errResp)
+	assert.Equal(t, "email_already_registered", errResp.Error)
+}
+
 func TestHandler_Login_Success(t *testing.T) {
 	router, email := setupHandlerTest(t)
 	password := "test-password-123"

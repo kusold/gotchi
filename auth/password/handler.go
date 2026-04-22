@@ -341,7 +341,9 @@ func (h *PasswordHandler) getSessionClaims(r *http.Request) (auth.SessionClaims,
 func handlePasswordError(w http.ResponseWriter, err error) {
 	var pwErr *PasswordError
 	if errors.As(err, &pwErr) {
-		writeError(w, pwErr.Status, errorString(pwErr.Err), pwErr.Detail)
+		// Use the error code as the client-facing message; never forward
+		// internal Detail (which may contain timing or enumeration info).
+		writeError(w, pwErr.Status, errorString(pwErr.Err), errorString(pwErr.Err))
 		return
 	}
 	// Fallback for unexpected errors

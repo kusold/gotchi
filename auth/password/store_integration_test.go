@@ -119,14 +119,13 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Second registration: ResolveOrProvisionUser returns the existing user
-	// and UpsertPasswordCredential updates the hash (v1 behavior).
-	userRef, err := store.Register(ctx, RegisterRequest{
+	// Second registration should be rejected.
+	_, err = store.Register(ctx, RegisterRequest{
 		Email:    email,
 		Password: "second-password-456",
 	})
-	require.NoError(t, err)
-	assert.NotEqual(t, uuid.UUID{}, userRef.UserID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrEmailAlreadyRegistered))
 }
 
 func TestRegister_PasswordPolicyViolation(t *testing.T) {

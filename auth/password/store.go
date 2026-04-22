@@ -28,7 +28,8 @@ type RegisterRequest struct {
 // to an underlying [auth.PostgresIdentityStore] and adds password-specific
 // credential management.
 type PasswordIdentityStore struct {
-	inner  *auth.PostgresIdentityStore
+	inner   *auth.PostgresIdentityStore
+	pool    *pgxpool.Pool
 	queries *db.Queries
 	hasher  Hasher
 	cfg     PasswordConfig
@@ -53,6 +54,7 @@ func NewPasswordIdentityStore(pool *pgxpool.Pool, inner *auth.PostgresIdentitySt
 
 	return &PasswordIdentityStore{
 		inner:   inner,
+		pool:    pool,
 		queries: db.New(pool),
 		hasher:  NewArgon2idHasher(conf.Hashing),
 		cfg:     conf,
@@ -81,7 +83,9 @@ func (s *PasswordIdentityStore) GetTenantDisplay(ctx context.Context, tenantID u
 
 // Register creates a new user with the given credentials. It creates the user
 // via the shared PostgresIdentityStore (which handles tenant provisioning) and
-// then stores the hashed password credential.
+// then stores the hashed password credential. Returns ErrEmailAlreadyRegistered
+// if a user with the same email and local issuer already has a password
+// credential.
 func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterRequest) (auth.UserRef, error) {
 	if req.Email == "" || req.Password == "" {
 		return auth.UserRef{}, &PasswordError{
@@ -98,6 +102,25 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 	}
 	if err := s.cfg.Policy.Validate(req.Password, contextWords...); err != nil {
 		return auth.UserRef{}, err
+	}
+
+	// Check if a local user with this email already has a password credential
+	existingUser, err := s.queries.GetUserByEmailAndIssuer(ctx, db.GetUserByEmailAndIssuerParams{
+		Email:  req.Email,
+		Issuer: s.cfg.Issuer,
+	})
+	if err == nil {
+		// User exists — check if they already have a password credential
+		_, credErr := s.queries.GetPasswordCredential(ctx, existingUser.ID)
+		if credErr == nil {
+			return auth.UserRef{}, &PasswordError{
+				Err:    ErrEmailAlreadyRegistered,
+				Status: 409,
+				Detail: "an account with this email already exists",
+			}
+		}
+		// User exists but has no password credential (e.g. OIDC-only).
+		// Fall through to attach a password credential.
 	}
 
 	// Create user via shared identity store
@@ -141,6 +164,10 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 // Authenticate verifies the email/password combination and returns the user
 // reference on success. It implements timing attack mitigation for non-existent
 // users, progressive lockout, and transparent password rehashing.
+//
+// The lockout check, credential fetch, and login attempt recording run inside a
+// single database transaction to prevent concurrent attempts from racing past
+// the lockout threshold.
 func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, password, ipAddress string) (auth.UserRef, error) {
 	// Look up user by email + local issuer
 	user, err := s.queries.GetUserByEmailAndIssuer(ctx, db.GetUserByEmailAndIssuerParams{
@@ -160,8 +187,19 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 		return auth.UserRef{}, fmt.Errorf("failed to query user: %w", err)
 	}
 
+	// Begin a transaction so the lockout check + credential verify + attempt
+	// recording are atomic. This prevents concurrent login attempts from
+	// racing past the lockout threshold.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return auth.UserRef{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txQueries := s.queries.WithTx(tx)
+
 	// Check lockout status
-	failedCount, err := s.queries.CountRecentFailedAttempts(ctx, db.CountRecentFailedAttemptsParams{
+	failedCount, err := txQueries.CountRecentFailedAttempts(ctx, db.CountRecentFailedAttemptsParams{
 		UserID:      user.ID,
 		AttemptedAt: time.Now().Add(-s.cfg.Lockout.Window),
 	})
@@ -169,17 +207,15 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 		return auth.UserRef{}, fmt.Errorf("failed to check lockout: %w", err)
 	}
 
-	lockoutDuration := CalculateLockoutDuration(int(failedCount), s.cfg.Lockout)
-	if lockoutDuration > 0 {
+	if CalculateLockoutDuration(int(failedCount), s.cfg.Lockout) > 0 {
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrAccountLocked,
 			Status: 423,
-			Detail: fmt.Sprintf("account locked, retry after %s", lockoutDuration),
 		}
 	}
 
 	// Fetch the stored credential
-	cred, err := s.queries.GetPasswordCredential(ctx, user.ID)
+	cred, err := txQueries.GetPasswordCredential(ctx, user.ID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			// User exists but has no password credential
@@ -206,11 +242,16 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 	}
 
 	if !match {
-		_ = s.queries.RecordLoginAttempt(ctx, db.RecordLoginAttemptParams{
+		if recordErr := txQueries.RecordLoginAttempt(ctx, db.RecordLoginAttemptParams{
 			UserID:    user.ID,
 			IpAddress: ipAddr,
 			Success:   false,
-		})
+		}); recordErr != nil {
+			s.logger.Error("failed to record failed login attempt",
+				"user_id", user.ID,
+				"error", recordErr,
+			)
+		}
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrInvalidCredentials,
 			Status: 401,
@@ -218,11 +259,16 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 	}
 
 	// Successful login
-	_ = s.queries.RecordLoginAttempt(ctx, db.RecordLoginAttemptParams{
+	if recordErr := txQueries.RecordLoginAttempt(ctx, db.RecordLoginAttemptParams{
 		UserID:    user.ID,
 		IpAddress: ipAddr,
 		Success:   true,
-	})
+	}); recordErr != nil {
+		s.logger.Error("failed to record successful login attempt",
+			"user_id", user.ID,
+			"error", recordErr,
+		)
+	}
 
 	// Check email verification if required
 	if s.cfg.RequireEmailVerification && !user.EmailVerified {
@@ -241,15 +287,29 @@ func (s *PasswordIdentityStore) Authenticate(ctx context.Context, email, passwor
 				"error", hashErr,
 			)
 		} else {
-			_ = s.queries.UpdatePasswordHash(ctx, db.UpdatePasswordHashParams{
+			if updateErr := txQueries.UpdatePasswordHash(ctx, db.UpdatePasswordHashParams{
 				UserID:       user.ID,
 				PasswordHash: newHash,
-			})
+			}); updateErr != nil {
+				s.logger.Error("failed to update rehashed password",
+					"user_id", user.ID,
+					"error", updateErr,
+				)
+			}
 		}
 	}
 
 	// Update last login
-	_ = s.queries.UpdateLastLoginAt(ctx, user.ID)
+	if updateErr := txQueries.UpdateLastLoginAt(ctx, user.ID); updateErr != nil {
+		s.logger.Error("failed to update last login time",
+			"user_id", user.ID,
+			"error", updateErr,
+		)
+	}
+
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		return auth.UserRef{}, fmt.Errorf("failed to commit transaction: %w", commitErr)
+	}
 
 	s.logger.Info("password login succeeded",
 		"user_id", user.ID,
@@ -300,10 +360,15 @@ func (s *PasswordIdentityStore) ChangePassword(ctx context.Context, userID uuid.
 	}
 
 	// Invalidate all password reset tokens
-	_ = s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
+	if invalidateErr := s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
 		UserID:    userID,
 		TokenType: "password_reset",
-	})
+	}); invalidateErr != nil {
+		s.logger.Error("failed to invalidate password reset tokens",
+			"user_id", userID,
+			"error", invalidateErr,
+		)
+	}
 
 	s.logger.Info("password changed", "user_id", userID)
 	return nil
@@ -324,10 +389,15 @@ func (s *PasswordIdentityStore) InitiatePasswordReset(ctx context.Context, email
 	}
 
 	// Invalidate any existing reset tokens
-	_ = s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
+	if invalidateErr := s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
 		UserID:    user.ID,
 		TokenType: "password_reset",
-	})
+	}); invalidateErr != nil {
+		s.logger.Error("failed to invalidate existing reset tokens",
+			"user_id", user.ID,
+			"error", invalidateErr,
+		)
+	}
 
 	// Generate a new token
 	plaintext, hash, err := GenerateToken(s.cfg.Tokens.TokenLength)
@@ -389,10 +459,15 @@ func (s *PasswordIdentityStore) CompletePasswordReset(ctx context.Context, token
 // InitiateEmailVerification generates an email verification token for the user.
 func (s *PasswordIdentityStore) InitiateEmailVerification(ctx context.Context, userID uuid.UUID) (string, error) {
 	// Invalidate any existing verification tokens
-	_ = s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
+	if invalidateErr := s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
 		UserID:    userID,
 		TokenType: "email_verification",
-	})
+	}); invalidateErr != nil {
+		s.logger.Error("failed to invalidate existing verification tokens",
+			"user_id", userID,
+			"error", invalidateErr,
+		)
+	}
 
 	plaintext, hash, err := GenerateToken(s.cfg.Tokens.TokenLength)
 	if err != nil {
