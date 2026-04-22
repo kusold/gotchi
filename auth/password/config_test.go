@@ -8,25 +8,22 @@ import (
 )
 
 func TestPasswordConfig_WithDefaults(t *testing.T) {
-	cfg := PasswordConfig{Enabled: true}
+	cfg := PasswordConfig{}
 	got := cfg.WithDefaults()
 
 	assert.Equal(t, "/auth/password", got.PathPrefix)
 	assert.Equal(t, "local", got.Issuer)
 	assert.Equal(t, "auth", got.SessionKey)
-	assert.Equal(t, "strict", got.EnumerationProtection)
 	assert.Equal(t, "Default", got.DefaultTenantName)
 	assert.False(t, got.RequireEmailVerification)
 }
 
 func TestPasswordConfig_WithDefaults_PreservesCustom(t *testing.T) {
 	cfg := PasswordConfig{
-		Enabled:                  true,
 		PathPrefix:               "/api/auth",
 		Issuer:                   "custom",
 		SessionKey:               "custom-auth",
 		RequireEmailVerification: true,
-		EnumerationProtection:    "relaxed",
 		DefaultTenantName:        "My Org",
 	}
 	got := cfg.WithDefaults()
@@ -35,7 +32,6 @@ func TestPasswordConfig_WithDefaults_PreservesCustom(t *testing.T) {
 	assert.Equal(t, "custom", got.Issuer)
 	assert.Equal(t, "custom-auth", got.SessionKey)
 	assert.True(t, got.RequireEmailVerification)
-	assert.Equal(t, "relaxed", got.EnumerationProtection)
 	assert.Equal(t, "My Org", got.DefaultTenantName)
 }
 

@@ -21,15 +21,10 @@ var (
 	// ErrEmailNotVerified is returned when login is attempted and email
 	// verification is required but has not been completed.
 	ErrEmailNotVerified = errors.New("email address has not been verified")
-	// ErrTokenExpired is returned when a reset or verification token has passed
-	// its expiry time.
-	ErrTokenExpired = errors.New("token has expired")
-	// ErrTokenConsumed is returned when a reset or verification token has
-	// already been used.
-	ErrTokenConsumed = errors.New("token has already been used")
-	// ErrTokenInvalid is returned when a token cannot be found or does not
-	// match.
-	ErrTokenInvalid = errors.New("token is invalid")
+	// ErrTokenInvalid is returned when a token cannot be found, has already
+	// been used, or has expired. A single sentinel is used to avoid leaking
+	// which condition failed.
+	ErrTokenInvalid = errors.New("token is invalid or expired")
 	// ErrUserNotFound is returned when a user cannot be found by ID.
 	ErrUserNotFound = errors.New("user not found")
 )

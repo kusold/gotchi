@@ -31,6 +31,8 @@ CREATE INDEX IF NOT EXISTS login_attempts_ip_idx
 -- Stores single-use tokens for password resets and email verification.
 -- Tokens are hashed (SHA-256) before storage; the plaintext is sent
 -- to the user and never persisted.
+-- Old consumed and expired rows should be periodically pruned to control
+-- table growth (e.g. DELETE FROM auth_tokens WHERE expires_at < NOW() - INTERVAL '7 days').
 CREATE TABLE IF NOT EXISTS auth_tokens (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

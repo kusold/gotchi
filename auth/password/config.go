@@ -21,8 +21,6 @@ const (
 // PasswordConfig holds all configuration for password authentication.
 // Use [PasswordConfig.WithDefaults] to populate defaults.
 type PasswordConfig struct {
-	// Enabled controls whether password authentication is active.
-	Enabled bool
 	// PathPrefix is the base path for password auth routes.
 	// Defaults to [DefaultPathPrefix].
 	PathPrefix string
@@ -35,9 +33,6 @@ type PasswordConfig struct {
 	// RequireEmailVerification blocks login until the user's email is verified.
 	// Defaults to false.
 	RequireEmailVerification bool
-	// EnumerationProtection controls whether the system reveals account
-	// existence. "strict" (default) or "relaxed".
-	EnumerationProtection string
 	// DefaultTenantName is the name used when creating the first tenant for a
 	// new user who has no existing tenant. Defaults to "Default".
 	DefaultTenantName string
@@ -66,9 +61,6 @@ func (c PasswordConfig) WithDefaults() PasswordConfig {
 	}
 	if cfg.SessionKey == "" {
 		cfg.SessionKey = "auth"
-	}
-	if cfg.EnumerationProtection == "" {
-		cfg.EnumerationProtection = "strict"
 	}
 	if cfg.DefaultTenantName == "" {
 		cfg.DefaultTenantName = "Default"

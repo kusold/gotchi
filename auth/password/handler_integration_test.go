@@ -28,7 +28,6 @@ func setupHandlerTest(t *testing.T) (*chi.Mux, string) {
 	require.NoError(t, err)
 
 	cfg := PasswordConfig{
-		Enabled: true,
 		Hashing: HashingConfig{
 			Memory:      4096,
 			Iterations:  1,
@@ -249,7 +248,7 @@ func TestHandler_VerifyEmail_Success(t *testing.T) {
 		DefaultTenantName: "Verify Tenant",
 	})
 	require.NoError(t, err)
-	store, err := NewPasswordIdentityStore(db.Pool, inner, PasswordConfig{Enabled: true}, nil)
+	store, err := NewPasswordIdentityStore(db.Pool, inner, PasswordConfig{}, nil)
 	require.NoError(t, err)
 
 	userID, err := uuid.Parse(regResp.UserID)
