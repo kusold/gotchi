@@ -34,11 +34,15 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
+	"sort"
+	"time"
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
@@ -157,9 +161,12 @@ func (m *Manager) Pool() *pgxpool.Pool {
 	return m.pool
 }
 
-// RunMigrations applies all registered migration sources in order using
-// goose. Migrations are run using an [AdminContext] to bypass tenant
-// isolation. Returns nil immediately if no migration sources are registered.
+// RunMigrations applies all registered migration sources using goose. All
+// sources are merged into a single flat filesystem sorted by filename (i.e.
+// by migration version) before being applied, so interleaved timestamps across
+// sources are handled correctly. Migrations are run using an [AdminContext] to
+// bypass tenant isolation. Returns nil immediately if no migration sources are
+// registered.
 func (m *Manager) RunMigrations(ctx context.Context) error {
 	if m.pool == nil {
 		return fmt.Errorf("database pool is not initialized")
@@ -172,17 +179,161 @@ func (m *Manager) RunMigrations(ctx context.Context) error {
 		return err
 	}
 
+	merged, err := mergeMigrationSources(m.migrationFiles)
+	if err != nil {
+		return fmt.Errorf("merging migration sources: %w", err)
+	}
+
 	sqlDB := stdlib.OpenDBFromPool(m.pool)
 	defer sqlDB.Close()
 
-	for _, source := range m.migrationFiles {
-		goose.SetBaseFS(source.FS)
-		if err := goose.UpContext(AdminContext(ctx), sqlDB, source.Dir); err != nil {
-			return err
+	goose.SetBaseFS(merged)
+	return goose.UpContext(AdminContext(ctx), sqlDB, ".")
+}
+
+// mergeMigrationSources combines all migration source filesystems into a
+// single flat [fs.FS]. Files are collected from each source and keyed by
+// filename; duplicate filenames across sources are an error. The resulting
+// filesystem presents all files in a single root directory (".").
+func mergeMigrationSources(sources []MigrationSource) (fs.FS, error) {
+	files := make(map[string][]byte)
+	for _, src := range sources {
+		entries, err := fs.ReadDir(src.FS, src.Dir)
+		if err != nil {
+			return nil, fmt.Errorf("listing migrations in %q: %w", src.Dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			filePath := name
+			if src.Dir != "." && src.Dir != "" {
+				filePath = src.Dir + "/" + name
+			}
+			data, err := fs.ReadFile(src.FS, filePath)
+			if err != nil {
+				return nil, fmt.Errorf("reading migration %s: %w", name, err)
+			}
+			if _, dup := files[name]; dup {
+				return nil, fmt.Errorf("duplicate migration filename: %s", name)
+			}
+			files[name] = data
 		}
 	}
-	return nil
+	return &flatFS{files: files}, nil
 }
+
+// flatFS is a read-only in-memory filesystem that presents a map of filename
+// → content as a single flat directory. It implements [fs.FS] and
+// [fs.ReadDirFS] so that goose can list and read migration files.
+type flatFS struct {
+	files map[string][]byte
+}
+
+func (f *flatFS) Open(name string) (fs.File, error) {
+	if name == "." {
+		return f.openRoot(), nil
+	}
+	data, ok := f.files[name]
+	if !ok {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	return &flatFile{
+		name:   name,
+		Reader: bytes.NewReader(data),
+		size:   int64(len(data)),
+	}, nil
+}
+
+func (f *flatFS) openRoot() *flatDir {
+	names := make([]string, 0, len(f.files))
+	for n := range f.files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	entries := make([]fs.DirEntry, len(names))
+	for i, n := range names {
+		entries[i] = &flatDirEntry{name: n, size: int64(len(f.files[n]))}
+	}
+	return &flatDir{entries: entries}
+}
+
+// flatFile represents a single file in a [flatFS].
+type flatFile struct {
+	name string
+	size int64
+	*bytes.Reader
+}
+
+func (f *flatFile) Close() error               { return nil }
+func (f *flatFile) Stat() (fs.FileInfo, error) { return &flatFileInfo{name: f.name, size: f.size}, nil }
+
+// flatDir represents the root directory of a [flatFS].
+type flatDir struct {
+	entries []fs.DirEntry
+	pos     int
+}
+
+func (d *flatDir) Stat() (fs.FileInfo, error) { return &flatDirInfo{}, nil }
+func (d *flatDir) Read([]byte) (int, error)   { return 0, io.EOF }
+func (d *flatDir) Close() error               { return nil }
+func (d *flatDir) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d.pos >= len(d.entries) {
+		if n <= 0 {
+			return nil, nil
+		}
+		return nil, io.EOF
+	}
+	if n <= 0 {
+		all := d.entries[d.pos:]
+		d.pos = len(d.entries)
+		return all, nil
+	}
+	end := d.pos + n
+	if end > len(d.entries) {
+		end = len(d.entries)
+	}
+	result := d.entries[d.pos:end]
+	d.pos = end
+	return result, nil
+}
+
+// flatDirEntry is an [fs.DirEntry] for a regular file in a [flatFS].
+type flatDirEntry struct {
+	name string
+	size int64
+}
+
+func (e *flatDirEntry) Name() string      { return e.name }
+func (e *flatDirEntry) IsDir() bool       { return false }
+func (e *flatDirEntry) Type() fs.FileMode { return 0 }
+func (e *flatDirEntry) Info() (fs.FileInfo, error) {
+	return &flatFileInfo{name: e.name, size: e.size}, nil
+}
+
+// flatFileInfo is an [fs.FileInfo] for a regular file in a [flatFS].
+type flatFileInfo struct {
+	name string
+	size int64
+}
+
+func (i *flatFileInfo) Name() string       { return i.name }
+func (i *flatFileInfo) Size() int64        { return i.size }
+func (i *flatFileInfo) Mode() fs.FileMode  { return 0o444 }
+func (i *flatFileInfo) ModTime() time.Time { return time.Time{} }
+func (i *flatFileInfo) IsDir() bool        { return false }
+func (i *flatFileInfo) Sys() any           { return nil }
+
+// flatDirInfo is an [fs.FileInfo] for the root directory of a [flatFS].
+type flatDirInfo struct{}
+
+func (i *flatDirInfo) Name() string       { return "." }
+func (i *flatDirInfo) Size() int64        { return 0 }
+func (i *flatDirInfo) Mode() fs.FileMode  { return fs.ModeDir | 0o555 }
+func (i *flatDirInfo) ModTime() time.Time { return time.Time{} }
+func (i *flatDirInfo) IsDir() bool        { return true }
+func (i *flatDirInfo) Sys() any           { return nil }
 
 // AdminContext returns a context with the system tenant set, bypassing
 // tenant isolation. Use this for administrative operations like migrations
