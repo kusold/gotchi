@@ -46,10 +46,11 @@ type OIDCProvider interface {
 // ID token verification, and UserInfo retrieval. It is used internally by
 // [OIDCHandler] but can also be used directly for custom authentication flows.
 type OIDCAuthenticator struct {
-	oauth2Config oauth2.Config
-	verifier     *oidc.IDTokenVerifier
-	provider     OIDCProvider
-	issuerURL    string
+	oauth2Config      oauth2.Config
+	verifier          *oidc.IDTokenVerifier
+	provider          OIDCProvider
+	issuerURL         string
+	endSessionEndpoint string
 }
 
 // NewOIDCAuthenticator creates a new OIDCAuthenticator by discovering the
@@ -71,7 +72,22 @@ func NewOIDCAuthenticator(cfg Config) (*OIDCAuthenticator, error) {
 		return nil, err
 	}
 
-	return NewOIDCAuthenticatorWithProvider(parsedCfg, provider)
+	// Discover end_session_endpoint from the provider's well-known configuration.
+	// This is optional per OIDC spec — not all providers support RP-initiated logout.
+	var endSessionEndpoint string
+	var providerClaims struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	if err := provider.Claims(&providerClaims); err == nil {
+		endSessionEndpoint = providerClaims.EndSessionEndpoint
+	}
+
+	auth, err := NewOIDCAuthenticatorWithProvider(parsedCfg, provider)
+	if err != nil {
+		return nil, err
+	}
+	auth.endSessionEndpoint = endSessionEndpoint
+	return auth, nil
 }
 
 // NewOIDCAuthenticatorWithProvider creates a new OIDCAuthenticator with a
@@ -89,17 +105,25 @@ func NewOIDCAuthenticatorWithProvider(cfg Config, provider OIDCProvider) (*OIDCA
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 
-	return &OIDCAuthenticator{
+	auth := &OIDCAuthenticator{
 		oauth2Config: oauth2Config,
 		verifier:     provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 		provider:     provider,
 		issuerURL:    cfg.IssuerURL,
-	}, nil
+	}
+
+	return auth, nil
 }
 
 // GetIssuer returns the OIDC issuer URL.
 func (o *OIDCAuthenticator) GetIssuer() string {
 	return o.issuerURL
+}
+
+// EndSessionURL returns the provider's end_session_endpoint URL, or empty
+// string if the provider does not support RP-initiated logout.
+func (o *OIDCAuthenticator) EndSessionURL() string {
+	return o.endSessionEndpoint
 }
 
 // Exchange exchanges an OIDC authorization code for OAuth2 tokens.

@@ -16,6 +16,8 @@ func assertDefaultConfig(t *testing.T, cfg Config) {
 	assert.Equal(t, DefaultCallbackPath, cfg.CallbackPath, "CallbackPath should default to DefaultCallbackPath")
 	assert.Equal(t, DefaultTenantsPath, cfg.TenantsPath, "TenantsPath should default to DefaultTenantsPath")
 	assert.Equal(t, DefaultTenantSelectPath, cfg.TenantSelectPath, "TenantSelectPath should default to DefaultTenantSelectPath")
+	assert.Equal(t, DefaultLogoutPath, cfg.LogoutPath, "LogoutPath should default to DefaultLogoutPath")
+	assert.Equal(t, DefaultPostLogoutRedirect, cfg.PostLogoutRedirect, "PostLogoutRedirect should default to DefaultPostLogoutRedirect")
 	assert.Equal(t, DefaultStateCookieName, cfg.StateCookieName, "StateCookieName should default to DefaultStateCookieName")
 	assert.NotNil(t, cfg.CookieSecure, "CookieSecure should not be nil")
 	assert.True(t, *cfg.CookieSecure, "CookieSecure should default to true")
@@ -47,6 +49,8 @@ func TestConfig_WithDefaults_PreservesProvidedValues(t *testing.T) {
 		CallbackPath:      "/custom/callback",
 		TenantsPath:       "/custom/tenants/list",
 		TenantSelectPath:  "/custom/tenant/select",
+		LogoutPath:        "/custom/logout",
+		PostLogoutRedirect: "/custom/goodbye",
 		StateCookieName:   "custom_state",
 		CookieSecure:      &customSecure,
 	}.withDefaults()
@@ -64,6 +68,8 @@ func TestConfig_WithDefaults_PreservesProvidedValues(t *testing.T) {
 	assert.Equal(t, "/custom/callback", cfg.CallbackPath)
 	assert.Equal(t, "/custom/tenants/list", cfg.TenantsPath)
 	assert.Equal(t, "/custom/tenant/select", cfg.TenantSelectPath)
+	assert.Equal(t, "/custom/logout", cfg.LogoutPath)
+	assert.Equal(t, "/custom/goodbye", cfg.PostLogoutRedirect)
 	assert.Equal(t, "custom_state", cfg.StateCookieName)
 	assert.NotNil(t, cfg.CookieSecure)
 	assert.False(t, *cfg.CookieSecure)

@@ -70,6 +70,10 @@ const (
 	DefaultTenantsPath = "/tenants"
 	// DefaultTenantSelectPath is the default API path for selecting an active tenant.
 	DefaultTenantSelectPath = "/tenant/select"
+	// DefaultLogoutPath is the default path for the OIDC logout endpoint.
+	DefaultLogoutPath = "/oidc/logout"
+	// DefaultPostLogoutRedirect is the default URL to redirect to after logout.
+	DefaultPostLogoutRedirect = "/"
 	// DefaultStateCookieName is the default cookie name for the OIDC state parameter.
 	DefaultStateCookieName = "oidc_state"
 	// DefaultCookieMaxAgeSecond is the default max age (in seconds) for the state cookie.

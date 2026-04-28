@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -62,11 +63,13 @@ func NewOIDCHandlerWithAuthenticator(cfg Config, authenticator *OIDCAuthenticato
 //   - GET [Config.CallbackPath] — handles the OIDC callback and token exchange
 //   - GET [Config.TenantsPath] — lists the user's tenant memberships (JSON)
 //   - POST [Config.TenantSelectPath] — selects an active tenant (JSON body)
+//   - POST [Config.LogoutPath] — destroys the session and redirects to provider logout
 func (h *OIDCHandler) RegisterRoutes(r chi.Router) {
 	r.Get(h.cfg.AuthorizePath, h.AuthorizeHandler)
 	r.Get(h.cfg.CallbackPath, h.CallbackHandler)
 	r.Get(h.cfg.TenantsPath, h.ListTenantsHandler)
 	r.Post(h.cfg.TenantSelectPath, h.SelectTenantHandler)
+	r.Post(h.cfg.LogoutPath, h.LogoutHandler)
 }
 
 // AuthorizeHandler initiates the OIDC authorization code flow by generating
@@ -276,6 +279,31 @@ func (h *OIDCHandler) SelectTenantHandler(w http.ResponseWriter, r *http.Request
 	claims.ActiveTenantID = &tenantID
 	h.session.Put(r.Context(), h.cfg.SessionKey, claims)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// LogoutHandler destroys the current session and redirects to the OIDC
+// provider's end_session_endpoint if available, otherwise to
+// [Config.PostLogoutRedirect]. This ensures both the local session and
+// the provider-side session are terminated.
+func (h *OIDCHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	if err := h.session.Destroy(r.Context()); err != nil {
+		http.Error(w, "failed to destroy session", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect to the provider's end_session_endpoint if available.
+	if endSession := h.oidc.EndSessionURL(); endSession != "" {
+		logoutURL, err := url.Parse(endSession)
+		if err == nil {
+			q := logoutURL.Query()
+			q.Set("post_logout_redirect_uri", h.cfg.PostLogoutRedirect)
+			logoutURL.RawQuery = q.Encode()
+			http.Redirect(w, r, logoutURL.String(), http.StatusSeeOther)
+			return
+		}
+	}
+
+	http.Redirect(w, r, h.cfg.PostLogoutRedirect, http.StatusSeeOther)
 }
 
 func (h *OIDCHandler) handleTenantSelectionRequired(w http.ResponseWriter, r *http.Request, memberships []Membership) {
