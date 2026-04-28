@@ -44,6 +44,12 @@ type Config struct {
 	// TenantSelectPath is the URL path for the API endpoint to select a tenant.
 	// Defaults to [DefaultTenantSelectPath].
 	TenantSelectPath string
+	// LogoutPath is the URL path for the OIDC logout endpoint.
+	// Defaults to [DefaultLogoutPath].
+	LogoutPath string
+	// PostLogoutRedirect is the URL to redirect to after logout.
+	// Defaults to [DefaultPostLogoutRedirect].
+	PostLogoutRedirect string
 	// StateCookieName is the name of the cookie holding the OIDC state parameter.
 	// Defaults to [DefaultStateCookieName].
 	StateCookieName string
@@ -77,6 +83,12 @@ func (c Config) withDefaults() Config {
 	}
 	if cfg.TenantSelectPath == "" {
 		cfg.TenantSelectPath = DefaultTenantSelectPath
+	}
+	if cfg.LogoutPath == "" {
+		cfg.LogoutPath = DefaultLogoutPath
+	}
+	if cfg.PostLogoutRedirect == "" {
+		cfg.PostLogoutRedirect = DefaultPostLogoutRedirect
 	}
 	if cfg.StateCookieName == "" {
 		cfg.StateCookieName = DefaultStateCookieName
