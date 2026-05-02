@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/kusold/gotchi/session"
 )
+
+const idTokenKey = DefaultSessionKey + ".id_token"
 
 // OIDCHandler manages the OpenID Connect authentication flow including
 // authorization redirects, token exchange, user provisioning, and tenant
@@ -109,6 +112,8 @@ func (h *OIDCHandler) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rawIDToken, _ := token.Extra("id_token").(string)
+
 	idToken, err := h.oidc.VerifyIDToken(r.Context(), token)
 	if err != nil {
 		http.Error(w, "failed to verify id token", http.StatusUnauthorized)
@@ -179,6 +184,9 @@ func (h *OIDCHandler) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.session.Put(r.Context(), h.cfg.SessionKey, claimsSession)
+	if rawIDToken != "" {
+		h.session.Put(r.Context(), idTokenKey, rawIDToken)
+	}
 
 	if claimsSession.ActiveTenantID == nil {
 		h.handleTenantSelectionRequired(w, r, memberships)
@@ -286,21 +294,26 @@ func (h *OIDCHandler) SelectTenantHandler(w http.ResponseWriter, r *http.Request
 // [Config.PostLogoutRedirect]. This ensures both the local session and
 // the provider-side session are terminated.
 func (h *OIDCHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	rawIDToken, _ := h.session.Get(r.Context(), idTokenKey).(string)
+
 	if err := h.session.Destroy(r.Context()); err != nil {
 		http.Error(w, "failed to destroy session", http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect to the provider's end_session_endpoint if available.
 	if endSession := h.oidc.EndSessionURL(); endSession != "" {
 		logoutURL, err := url.Parse(endSession)
 		if err == nil {
 			q := logoutURL.Query()
 			q.Set("post_logout_redirect_uri", h.cfg.PostLogoutRedirect)
+			if rawIDToken != "" {
+				q.Set("id_token_hint", rawIDToken)
+			}
 			logoutURL.RawQuery = q.Encode()
 			http.Redirect(w, r, logoutURL.String(), http.StatusSeeOther)
 			return
 		}
+		slog.Warn("failed to parse end_session_endpoint", "url", endSession, "err", err)
 	}
 
 	http.Redirect(w, r, h.cfg.PostLogoutRedirect, http.StatusSeeOther)
