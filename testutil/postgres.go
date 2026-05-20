@@ -32,12 +32,12 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	dockertest "github.com/ory/dockertest/v4"
-	"github.com/stretchr/testify/require"
 
 	"github.com/kusold/gotchi/db"
 )
@@ -100,7 +100,9 @@ func SetupTestDB(m *testing.M, opts ...SetupOption) *TestDB {
 		return nil
 	}
 
-	// Start PostgreSQL container using v4 functional options
+	// Start PostgreSQL container using v4 functional options.
+	// Credentials are intentionally trivial — the container is ephemeral and
+	// only accessible from the local host.
 	resource, err := pool.Run(ctx, "postgres",
 		dockertest.WithTag("18-alpine"),
 		dockertest.WithEnv([]string{
@@ -121,6 +123,9 @@ func SetupTestDB(m *testing.M, opts ...SetupOption) *TestDB {
 	// Wait for PostgreSQL to be ready - v4 API requires context and timeout
 	var dbPool *pgxpool.Pool
 	if err = pool.Retry(ctx, 30*time.Second, func() error {
+		if dbPool != nil {
+			dbPool.Close()
+		}
 		var err error
 		dbPool, err = pgxpool.New(ctx, databaseURL)
 		if err != nil {
@@ -170,6 +175,7 @@ func runMigrations(ctx context.Context, databaseURL string, sources []db.Migrati
 	if err := mgr.Connect(ctx); err != nil {
 		return fmt.Errorf("could not connect: %w", err)
 	}
+	defer mgr.Close()
 
 	if err := mgr.RunMigrations(ctx); err != nil {
 		return fmt.Errorf("could not run migrations: %w", err)
@@ -178,13 +184,13 @@ func runMigrations(ctx context.Context, databaseURL string, sources []db.Migrati
 	return nil
 }
 
-// RequireTestDB is like SetupTestDB but fails the test immediately if setup fails.
+// RequireTestDB is like SetupTestDB but terminates the process if setup fails.
 // Use this in TestMain when you want the test to fail fast on setup errors.
-func RequireTestDB(tb testing.TB, m *testing.M, opts ...SetupOption) *TestDB {
+func RequireTestDB(m *testing.M, opts ...SetupOption) *TestDB {
 	testDB := SetupTestDB(m, opts...)
-	if testDB == nil {
-		tb.Fatal("Failed to setup test database")
+	if testDB == nil || testDB.Pool == nil {
+		fmt.Println("Failed to setup test database")
+		os.Exit(1)
 	}
-	require.NotNil(tb, testDB.Pool, "test database pool should not be nil")
 	return testDB
 }
