@@ -1,43 +1,42 @@
 // Package testutil provides utilities for integration testing against a
 // real PostgreSQL database running in a Docker container.
 //
-// # Basic Usage (with migrations)
+// # Basic Usage
+//
+// Use [SetupTestDB] in TestMain when you want to handle setup errors yourself:
 //
 //	func TestMain(m *testing.M) {
+//	    if testing.Short() {
+//	        os.Exit(m.Run())
+//	    }
 //	    testDB := testutil.SetupTestDB(m,
 //	        testutil.WithMigrations(
 //	            db.MigrationSource{FS: migrations.Core(), Dir: "."},
 //	            db.MigrationSource{FS: migrations.Auth(), Dir: "."},
 //	        ),
 //	    )
-//	    defer testDB.Close()
-//	    os.Exit(m.Run())
+//	    if testDB == nil {
+//	        fmt.Println("Failed to setup test database")
+//	        os.Exit(1)
+//	    }
+//	    code := m.Run()
+//	    testDB.Close()
+//	    os.Exit(code)
 //	}
 //
-// # With App-Specific Migrations
-//
-//	func TestMain(m *testing.M) {
-//	    testDB := testutil.SetupTestDB(m,
-//	        testutil.WithMigrations(
-//	            db.MigrationSource{FS: migrations.Core(), Dir: "."},
-//	            db.MigrationSource{FS: migrations.Auth(), Dir: "."},
-//	            db.MigrationSource{FS: myAppMigrations, Dir: "."},
-//	        ),
-//	    )
-//	    defer testDB.Close()
-//	    os.Exit(m.Run())
-//	}
+// Use [RequireTestDB] in test functions where you have a testing.TB to get
+// a proper test failure with t.Fatal on error.
 package testutil
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	dockertest "github.com/ory/dockertest/v4"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kusold/gotchi/db"
 )
@@ -74,7 +73,8 @@ func WithMigrations(sources ...db.MigrationSource) SetupOption {
 
 // SetupTestDB starts a PostgreSQL container using dockertest and runs any
 // registered migrations. It returns a TestDB that must be closed with Close()
-// when the test is done.
+// when the test is done. If the container cannot be started or migrations
+// fail, it returns nil. Use [RequireTestDB] to fail immediately on error.
 //
 // Use [WithMigrations] to register migration sources:
 //
@@ -184,13 +184,12 @@ func runMigrations(ctx context.Context, databaseURL string, sources []db.Migrati
 	return nil
 }
 
-// RequireTestDB is like SetupTestDB but terminates the process if setup fails.
-// Use this in TestMain when you want the test to fail fast on setup errors.
-func RequireTestDB(m *testing.M, opts ...SetupOption) *TestDB {
+// RequireTestDB is like [SetupTestDB] but calls tb.Fatal if setup fails.
+func RequireTestDB(tb testing.TB, m *testing.M, opts ...SetupOption) *TestDB {
 	testDB := SetupTestDB(m, opts...)
-	if testDB == nil || testDB.Pool == nil {
-		fmt.Println("Failed to setup test database")
-		os.Exit(1)
+	if testDB == nil {
+		tb.Fatal("Failed to setup test database")
 	}
+	require.NotNil(tb, testDB.Pool, "test database pool should not be nil")
 	return testDB
 }
