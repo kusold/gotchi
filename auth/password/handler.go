@@ -1,6 +1,7 @@
 package password
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -121,12 +122,21 @@ func (h *PasswordHandler) RegisterHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	userRef, err := h.store.Register(r.Context(), RegisterRequest{
+	regReq := RegisterRequest{
 		Email:    req.Email,
 		Password: req.Password,
 		Username: req.Username,
 		Name:     req.Name,
-	})
+	}
+
+	var token string
+	var userRef auth.UserRef
+	var err error
+	if h.cfg.RequireEmailVerification {
+		userRef, token, err = h.store.RegisterWithEmailVerification(r.Context(), regReq, emailVerificationSender(h.cfg.EmailSender))
+	} else {
+		userRef, err = h.store.Register(r.Context(), regReq)
+	}
 	if err != nil {
 		handlePasswordError(w, err)
 		return
@@ -137,15 +147,20 @@ func (h *PasswordHandler) RegisterHandler(w http.ResponseWriter, r *http.Request
 		Email:  req.Email,
 	}
 
-	// If email verification is required and no EmailSender, generate a token
-	if h.cfg.RequireEmailVerification && h.cfg.EmailSender == nil {
-		token, tokenErr := h.store.InitiateEmailVerification(r.Context(), userRef.UserID)
-		if tokenErr == nil {
-			resp.Token = token
-		}
+	if h.cfg.RequireEmailVerification && h.cfg.EmailSender != nil {
+		resp.EmailSent = true
+	} else if h.cfg.RequireEmailVerification && token != "" {
+		resp.Token = token
 	}
 
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func emailVerificationSender(sender EmailSender) func(context.Context, string, string) error {
+	if sender == nil {
+		return nil
+	}
+	return sender.SendEmailVerification
 }
 
 // LoginHandler authenticates a user and creates a session.

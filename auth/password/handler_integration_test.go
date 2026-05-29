@@ -2,10 +2,14 @@ package password
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +23,10 @@ import (
 )
 
 func setupHandlerTest(t *testing.T) (*chi.Mux, string) {
+	return setupHandlerTestWithConfig(t, PasswordConfig{}, nil)
+}
+
+func setupHandlerTestWithConfig(t *testing.T, cfg PasswordConfig, logger *slog.Logger) (*chi.Mux, string) {
 	t.Helper()
 	db := requireIntegrationDB(t)
 
@@ -27,17 +35,15 @@ func setupHandlerTest(t *testing.T) (*chi.Mux, string) {
 	})
 	require.NoError(t, err)
 
-	cfg := PasswordConfig{
-		Hashing: HashingConfig{
-			Memory:      4096,
-			Iterations:  1,
-			Parallelism: 1,
-			SaltLength:  8,
-			KeyLength:   16,
-		},
+	cfg.Hashing = HashingConfig{
+		Memory:      4096,
+		Iterations:  1,
+		Parallelism: 1,
+		SaltLength:  8,
+		KeyLength:   16,
 	}
 
-	store, err := NewPasswordIdentityStore(db.Pool, inner, cfg, nil)
+	store, err := NewPasswordIdentityStore(db.Pool, inner, cfg, logger)
 	require.NoError(t, err)
 
 	sessMgr := session.NewMemory(session.Config{
@@ -52,6 +58,28 @@ func setupHandlerTest(t *testing.T) (*chi.Mux, string) {
 	handler.RegisterRoutes(r)
 
 	return r, uniqueEmail(t)
+}
+
+type recordingEmailSender struct {
+	verificationEmail string
+	verificationToken string
+	verificationCalls int
+	verificationErr   error
+}
+
+func (s *recordingEmailSender) SendPasswordReset(context.Context, string, string) error {
+	return nil
+}
+
+func (s *recordingEmailSender) SendEmailVerification(_ context.Context, email, token string) error {
+	s.verificationCalls++
+	s.verificationEmail = email
+	s.verificationToken = token
+	return s.verificationErr
+}
+
+func (s *recordingEmailSender) SendPasswordChanged(context.Context, string) error {
+	return nil
 }
 
 func doJSON(t *testing.T, router *chi.Mux, method, path string, body any) *httptest.ResponseRecorder {
@@ -120,6 +148,96 @@ func TestHandler_Register_DuplicateEmail(t *testing.T) {
 	var errResp errorResponse
 	decodeResponse(t, w, &errResp)
 	assert.Equal(t, "email_already_registered", errResp.Error)
+}
+
+func TestHandler_Register_EmailVerificationWithSender_SendsEmail(t *testing.T) {
+	sender := &recordingEmailSender{}
+	router, email := setupHandlerTestWithConfig(t, PasswordConfig{
+		RequireEmailVerification: true,
+		EmailSender:              sender,
+	}, nil)
+	password := "secure-password-123"
+
+	w := doJSON(t, router, "POST", "/register", registerRequest{
+		Email:    email,
+		Password: password,
+	})
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp registerResponse
+	decodeResponse(t, w, &resp)
+	assert.NotEmpty(t, resp.UserID)
+	assert.Equal(t, email, resp.Email)
+	assert.True(t, resp.EmailSent)
+	assert.Empty(t, resp.Token)
+
+	assert.Equal(t, 1, sender.verificationCalls)
+	assert.Equal(t, email, sender.verificationEmail)
+	require.NotEmpty(t, sender.verificationToken)
+
+	w = doJSON(t, router, "POST", "/login", loginRequest{
+		Email:    email,
+		Password: password,
+	})
+	assert.Equal(t, http.StatusForbidden, w.Code)
+
+	w = doJSON(t, router, "POST", "/verify-email", verifyEmailRequest{Token: sender.verificationToken})
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	w = doJSON(t, router, "POST", "/login", loginRequest{
+		Email:    email,
+		Password: password,
+	})
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestHandler_Register_EmailVerificationSendFailure_RollsBackRegistration(t *testing.T) {
+	sender := &recordingEmailSender{verificationErr: errors.New("smtp down")}
+	router, email := setupHandlerTestWithConfig(t, PasswordConfig{
+		RequireEmailVerification: true,
+		EmailSender:              sender,
+	}, nil)
+
+	w := doJSON(t, router, "POST", "/register", registerRequest{
+		Email:    email,
+		Password: "secure-password-123",
+	})
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, 1, sender.verificationCalls)
+	require.NotEmpty(t, sender.verificationToken)
+
+	sender.verificationErr = nil
+	w = doJSON(t, router, "POST", "/register", registerRequest{
+		Email:    email,
+		Password: "secure-password-123",
+	})
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.Equal(t, 2, sender.verificationCalls)
+}
+
+func TestHandler_Register_EmailVerificationDevMode_ReturnsAndLogsToken(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	router, email := setupHandlerTestWithConfig(t, PasswordConfig{
+		RequireEmailVerification: true,
+	}, logger)
+
+	w := doJSON(t, router, "POST", "/register", registerRequest{
+		Email:    email,
+		Password: "secure-password-123",
+	})
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp registerResponse
+	decodeResponse(t, w, &resp)
+	require.NotEmpty(t, resp.Token)
+	assert.False(t, resp.EmailSent)
+
+	logOutput := logs.String()
+	assert.Contains(t, logOutput, "email verification token generated for development")
+	assert.Contains(t, logOutput, email)
+	assert.Contains(t, logOutput, resp.Token)
+	assert.True(t, strings.Contains(logOutput, "token=") || strings.Contains(logOutput, "token:"))
 }
 
 func TestHandler_Login_Success(t *testing.T) {
