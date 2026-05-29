@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/cors"
 	"github.com/kusold/gotchi/auth"
@@ -44,7 +45,8 @@ func corsDefaults(first string, rest ...string) CORSConfig {
 // builder accumulates configuration from options before constructing the Application.
 type builder struct {
 	// server
-	port string
+	port            string
+	shutdownTimeout time.Duration
 
 	// database (required)
 	dbConfig *db.Config
@@ -104,6 +106,9 @@ func (b *builder) applyDefaults() {
 	if b.port == "" {
 		b.port = "3000"
 	}
+	if b.shutdownTimeout == 0 {
+		b.shutdownTimeout = defaultShutdownTimeout
+	}
 	if b.authConfig != nil {
 		defaults := b.authConfig.WithDefaults()
 		b.authConfig = &defaults
@@ -150,6 +155,18 @@ func WithDatabaseConfig(cfg db.Config) Option {
 func WithPort(port string) Option {
 	return func(b *builder) error {
 		b.port = port
+		return nil
+	}
+}
+
+// WithShutdownTimeout sets the maximum time Run waits for in-flight HTTP
+// requests to finish after ctx is cancelled. Defaults to 5 seconds.
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(b *builder) error {
+		if timeout <= 0 {
+			return fmt.Errorf("shutdown timeout must be positive")
+		}
+		b.shutdownTimeout = timeout
 		return nil
 	}
 }
