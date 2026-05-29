@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -35,6 +36,12 @@ func TestBuilderDefaults(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, app.config.clock)
 		assert.NotNil(t, app.config.logger)
+	})
+
+	t.Run("sets default shutdown timeout", func(t *testing.T) {
+		app, err := New(testOpts()...)
+		require.NoError(t, err)
+		assert.Equal(t, defaultShutdownTimeout, app.config.shutdownTimeout)
 	})
 }
 
@@ -101,6 +108,26 @@ func TestWithDatabaseConfig(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "postgres://example", app.config.dbConfig.DatabaseURL)
 		assert.True(t, app.config.dbConfig.EnableSlogTracing)
+	})
+}
+
+func TestWithShutdownTimeout(t *testing.T) {
+	t.Run("preserves provided timeout", func(t *testing.T) {
+		app, err := New(
+			WithDatabase("postgres://example"),
+			WithShutdownTimeout(30*time.Second),
+		)
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Second, app.config.shutdownTimeout)
+	})
+
+	t.Run("rejects non-positive timeout", func(t *testing.T) {
+		_, err := New(
+			WithDatabase("postgres://example"),
+			WithShutdownTimeout(0),
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "shutdown timeout must be positive")
 	})
 }
 

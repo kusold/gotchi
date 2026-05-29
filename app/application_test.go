@@ -1,9 +1,12 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -81,6 +84,100 @@ func TestApplicationClose(t *testing.T) {
 		err = app.Close()
 		assert.NoError(t, err)
 	})
+}
+
+func TestRunHTTPServer(t *testing.T) {
+	t.Run("context cancellation shuts down the server", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		server := newFakeHTTPServer()
+
+		done := make(chan error, 1)
+		go func() {
+			done <- runHTTPServer(ctx, server, 25*time.Millisecond)
+		}()
+
+		<-server.listenStarted
+		cancel()
+
+		require.NoError(t, <-done)
+
+		shutdownCtx := <-server.shutdownCtx
+		deadline, ok := shutdownCtx.Deadline()
+		require.True(t, ok)
+		assert.WithinDuration(t, time.Now().Add(25*time.Millisecond), deadline, 20*time.Millisecond)
+	})
+
+	t.Run("returns shutdown error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		server := newFakeHTTPServer()
+		server.shutdownErr = errors.New("shutdown failed")
+
+		done := make(chan error, 1)
+		go func() {
+			done <- runHTTPServer(ctx, server, time.Second)
+		}()
+
+		<-server.listenStarted
+		cancel()
+
+		require.EqualError(t, <-done, "shutdown failed")
+	})
+
+	t.Run("returns server error", func(t *testing.T) {
+		server := newFakeHTTPServer()
+		wantErr := errors.New("listen failed")
+
+		done := make(chan error, 1)
+		go func() {
+			done <- runHTTPServer(context.Background(), server, time.Second)
+		}()
+
+		<-server.listenStarted
+		server.serveErr <- wantErr
+
+		require.ErrorIs(t, <-done, wantErr)
+		assert.Empty(t, server.shutdownCtx)
+	})
+
+	t.Run("treats ErrServerClosed as nil", func(t *testing.T) {
+		server := newFakeHTTPServer()
+
+		done := make(chan error, 1)
+		go func() {
+			done <- runHTTPServer(context.Background(), server, time.Second)
+		}()
+
+		<-server.listenStarted
+		server.serveErr <- http.ErrServerClosed
+
+		require.NoError(t, <-done)
+	})
+}
+
+type fakeHTTPServer struct {
+	listenStarted chan struct{}
+	serveErr      chan error
+	shutdownCtx   chan context.Context
+	shutdownErr   error
+}
+
+func newFakeHTTPServer() *fakeHTTPServer {
+	return &fakeHTTPServer{
+		listenStarted: make(chan struct{}),
+		serveErr:      make(chan error, 1),
+		shutdownCtx:   make(chan context.Context, 1),
+	}
+}
+
+func (s *fakeHTTPServer) ListenAndServe() error {
+	close(s.listenStarted)
+	return <-s.serveErr
+}
+
+func (s *fakeHTTPServer) Shutdown(ctx context.Context) error {
+	s.shutdownCtx <- ctx
+	s.serveErr <- http.ErrServerClosed
+	return s.shutdownErr
 }
 
 func TestRealClock(t *testing.T) {

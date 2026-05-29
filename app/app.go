@@ -40,6 +40,7 @@
 // options are optional and have sensible defaults:
 //
 //   - [WithPort] — HTTP server port (default "3000")
+//   - [WithShutdownTimeout] — graceful HTTP shutdown timeout (default 5s)
 //   - [WithAuth] — enables OIDC authentication (auto-enables sessions)
 //   - [WithSessions] — explicit session configuration
 //   - [WithOTEL] — OpenTelemetry tracing and metrics
@@ -97,7 +98,10 @@ type Clock interface {
 // realClock is the production Clock implementation that delegates to time.Now.
 type realClock struct{}
 
-const defaultOTELShutdownTimeout = 5 * time.Second
+const (
+	defaultOTELShutdownTimeout = 5 * time.Second
+	defaultShutdownTimeout     = 5 * time.Second
+)
 
 // Now returns the current local time.
 func (realClock) Now() time.Time {
@@ -170,6 +174,11 @@ type Application struct {
 	otelShutdown func(context.Context) error
 }
 
+type httpServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+}
+
 // New creates an Application from the supplied options.
 // At minimum, WithDatabase or WithDatabaseConfig must be provided.
 func New(opts ...Option) (*Application, error) {
@@ -210,7 +219,9 @@ func (a *Application) Dependencies() Dependencies {
 }
 
 // Run initializes all configured subsystems and starts the HTTP server.
-// It blocks until the server exits or ctx is cancelled.
+// It blocks until the server exits or ctx is cancelled. When ctx is cancelled,
+// Run gracefully shuts down the HTTP server using the configured shutdown
+// timeout and returns nil if shutdown succeeds.
 func (a *Application) Run(ctx context.Context) error {
 	cfg := &a.config
 
@@ -352,7 +363,35 @@ func (a *Application) Run(ctx context.Context) error {
 		}
 	}
 
-	return http.ListenAndServe(fmt.Sprintf(":%s", cfg.port), a.router)
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%s", cfg.port),
+		Handler: a.router,
+	}
+
+	return runHTTPServer(ctx, server, cfg.shutdownTimeout)
+}
+
+func runHTTPServer(ctx context.Context, server httpServer, shutdownTimeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return <-errCh
+	}
 }
 
 // setupMiddleware applies all configured middleware to the router.
