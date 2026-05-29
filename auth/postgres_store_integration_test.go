@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"sync"
@@ -17,6 +18,11 @@ import (
 var testDB *testutil.TestDB
 
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
 	testDB = testutil.SetupTestDB(m)
 	if testDB == nil {
 		fmt.Println("Failed to setup test database")
@@ -30,6 +36,10 @@ func TestMain(m *testing.M) {
 
 // newTestStore creates a PostgresIdentityStore with a unique tenant name for test isolation
 func newTestStore(t *testing.T, tenantName string) *PostgresIdentityStore {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
 	store, err := NewPostgresIdentityStore(testDB.Pool, PostgresStoreConfig{
 		DefaultTenantName: tenantName,
 	})

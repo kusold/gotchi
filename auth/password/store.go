@@ -91,6 +91,45 @@ func (s *PasswordIdentityStore) GetTenantDisplay(ctx context.Context, tenantID u
 // Returns ErrEmailAlreadyRegistered if a user with the same email and local
 // issuer already has a password credential.
 func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterRequest) (auth.UserRef, error) {
+	return s.register(ctx, req, nil)
+}
+
+// RegisterWithEmailVerification creates a user, stores their password
+// credential, creates an email verification token, and optionally sends the
+// verification email before committing. If send returns an error, the
+// registration is rolled back.
+func (s *PasswordIdentityStore) RegisterWithEmailVerification(ctx context.Context, req RegisterRequest, send func(context.Context, string, string) error) (auth.UserRef, string, error) {
+	var verificationToken string
+	userRef, err := s.register(ctx, req, func(ctx context.Context, txQueries *db.Queries, userRef auth.UserRef) error {
+		token, err := s.initiateEmailVerification(ctx, txQueries, userRef.UserID)
+		if err != nil {
+			return fmt.Errorf("failed to generate verification token: %w", err)
+		}
+		verificationToken = token
+
+		if send != nil {
+			if err := send(ctx, req.Email, token); err != nil {
+				return fmt.Errorf("failed to send verification email: %w", err)
+			}
+		} else {
+			s.logger.Info("email verification token generated for development",
+				"user_id", userRef.UserID,
+				"email", req.Email,
+				"token", token,
+			)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return auth.UserRef{}, "", err
+	}
+	return userRef, verificationToken, nil
+}
+
+type beforeRegisterCommitFunc func(context.Context, *db.Queries, auth.UserRef) error
+
+func (s *PasswordIdentityStore) register(ctx context.Context, req RegisterRequest, beforeCommit beforeRegisterCommitFunc) (auth.UserRef, error) {
 	if req.Email == "" || req.Password == "" {
 		return auth.UserRef{}, &PasswordError{
 			Err:    ErrPasswordPolicyViolation,
@@ -176,6 +215,12 @@ func (s *PasswordIdentityStore) Register(ctx context.Context, req RegisterReques
 	})
 	if err != nil {
 		return auth.UserRef{}, fmt.Errorf("failed to store credential: %w", err)
+	}
+
+	if beforeCommit != nil {
+		if err := beforeCommit(ctx, txQueries, userRef); err != nil {
+			return auth.UserRef{}, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -535,8 +580,12 @@ func (s *PasswordIdentityStore) CompletePasswordReset(ctx context.Context, token
 
 // InitiateEmailVerification generates an email verification token for the user.
 func (s *PasswordIdentityStore) InitiateEmailVerification(ctx context.Context, userID uuid.UUID) (string, error) {
+	return s.initiateEmailVerification(ctx, s.queries, userID)
+}
+
+func (s *PasswordIdentityStore) initiateEmailVerification(ctx context.Context, queries *db.Queries, userID uuid.UUID) (string, error) {
 	// Invalidate any existing verification tokens
-	if invalidateErr := s.queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
+	if invalidateErr := queries.InvalidateUserTokens(ctx, db.InvalidateUserTokensParams{
 		UserID:    userID,
 		TokenType: "email_verification",
 	}); invalidateErr != nil {
@@ -551,7 +600,7 @@ func (s *PasswordIdentityStore) InitiateEmailVerification(ctx context.Context, u
 		return "", fmt.Errorf("failed to generate token: %w", err)
 	}
 
-	err = s.queries.InsertAuthToken(ctx, db.InsertAuthTokenParams{
+	err = queries.InsertAuthToken(ctx, db.InsertAuthTokenParams{
 		UserID:    userID,
 		TokenHash: hash,
 		TokenType: "email_verification",
