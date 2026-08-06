@@ -50,6 +50,10 @@ func requireIntegrationDB(t *testing.T) *testutil.TestDB {
 }
 
 func newTestPasswordStore(t *testing.T) (*PasswordIdentityStore, *auth.PostgresIdentityStore) {
+	return newTestPasswordStoreWithConfig(t, nil)
+}
+
+func newTestPasswordStoreWithConfig(t *testing.T, configure func(*PasswordConfig)) (*PasswordIdentityStore, *auth.PostgresIdentityStore) {
 	t.Helper()
 	db := requireIntegrationDB(t)
 
@@ -70,6 +74,9 @@ func newTestPasswordStore(t *testing.T) (*PasswordIdentityStore, *auth.PostgresI
 			MaxAttempts: 3,
 			Window:      15 * time.Minute,
 		},
+	}
+	if configure != nil {
+		configure(&cfg)
 	}
 
 	store, err := NewPasswordIdentityStore(db.Pool, inner, cfg, nil)
@@ -299,6 +306,10 @@ func TestPasswordReset_FullFlow(t *testing.T) {
 	// New password should work
 	_, err = store.Authenticate(ctx, email, newPassword, "127.0.0.1")
 	require.NoError(t, err)
+
+	err = store.CompletePasswordReset(ctx, token, "another-password-789")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrTokenInvalid))
 }
 
 func TestPasswordReset_InvalidToken(t *testing.T) {
@@ -308,6 +319,57 @@ func TestPasswordReset_InvalidToken(t *testing.T) {
 	err := store.CompletePasswordReset(ctx, "invalid-token", "new-password")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrTokenInvalid))
+}
+
+func TestPasswordReset_InvalidNewPasswordDoesNotConsumeToken(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestPasswordStore(t)
+	email := uniqueEmail(t)
+
+	_, err := store.Register(ctx, RegisterRequest{
+		Email:    email,
+		Password: "old-password-123",
+	})
+	require.NoError(t, err)
+
+	token, err := store.InitiatePasswordReset(ctx, email)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+
+	err = store.CompletePasswordReset(ctx, token, "short")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrPasswordPolicyViolation))
+
+	err = store.CompletePasswordReset(ctx, token, "new-password-456")
+	require.NoError(t, err)
+
+	_, err = store.Authenticate(ctx, email, "new-password-456", "127.0.0.1")
+	require.NoError(t, err)
+}
+
+func TestPasswordReset_ExpiredToken(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestPasswordStoreWithConfig(t, func(cfg *PasswordConfig) {
+		cfg.Tokens.ResetTokenExpiry = -1 * time.Hour
+	})
+	email := uniqueEmail(t)
+
+	_, err := store.Register(ctx, RegisterRequest{
+		Email:    email,
+		Password: "old-password-123",
+	})
+	require.NoError(t, err)
+
+	token, err := store.InitiatePasswordReset(ctx, email)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+
+	err = store.CompletePasswordReset(ctx, token, "new-password-456")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrTokenInvalid))
+
+	_, err = store.Authenticate(ctx, email, "old-password-123", "127.0.0.1")
+	require.NoError(t, err)
 }
 
 func TestPasswordReset_NonexistentEmail(t *testing.T) {

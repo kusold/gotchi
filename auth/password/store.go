@@ -533,7 +533,15 @@ func (s *PasswordIdentityStore) InitiatePasswordReset(ctx context.Context, email
 func (s *PasswordIdentityStore) CompletePasswordReset(ctx context.Context, token, newPassword string) error {
 	tokenHash := sha256Sum(token)
 
-	userID, err := s.queries.ConsumeAuthToken(ctx, db.ConsumeAuthTokenParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txQueries := s.queries.WithTx(tx)
+
+	userID, err := txQueries.ConsumeAuthToken(ctx, db.ConsumeAuthTokenParams{
 		TokenHash: tokenHash,
 		TokenType: "password_reset",
 	})
@@ -545,7 +553,7 @@ func (s *PasswordIdentityStore) CompletePasswordReset(ctx context.Context, token
 	}
 
 	// Look up user to provide context words (email, username) for policy validation.
-	user, err := s.queries.GetUserByID(ctx, userID)
+	user, err := txQueries.GetUserByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch user: %w", err)
 	}
@@ -566,12 +574,16 @@ func (s *PasswordIdentityStore) CompletePasswordReset(ctx context.Context, token
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	err = s.queries.UpdatePasswordHash(ctx, db.UpdatePasswordHashParams{
+	err = txQueries.UpdatePasswordHash(ctx, db.UpdatePasswordHashParams{
 		UserID:       userID,
 		PasswordHash: hash,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update password: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit password reset: %w", err)
 	}
 
 	s.logger.Info("password reset completed", "user_id", userID)
