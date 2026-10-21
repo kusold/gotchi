@@ -63,6 +63,13 @@ func TestTokenConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 32, cfg.TokenLength)
 }
 
+func TestTokenConfig_WithDefaults_PreservesCustomResetExpiry(t *testing.T) {
+	cfg := TokenConfig{ResetTokenExpiry: 30 * time.Minute}.withDefaults()
+	assert.Equal(t, 30*time.Minute, cfg.ResetTokenExpiry)
+	assert.Equal(t, 24*time.Hour, cfg.VerificationTokenExpiry)
+	assert.Equal(t, 32, cfg.TokenLength)
+}
+
 func TestPasswordPolicy_Defaults(t *testing.T) {
 	cfg := PasswordPolicy{}.withDefaults()
 	assert.Equal(t, 8, cfg.MinLength)
