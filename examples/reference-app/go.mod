@@ -3,7 +3,7 @@ module github.com/kusold/reference-app
 go 1.25.5
 
 require (
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/kusold/gotchi v0.1.0
 )
 
