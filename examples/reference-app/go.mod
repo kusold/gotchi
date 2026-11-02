@@ -18,7 +18,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
 	github.com/exaring/otelpgx v0.10.0 // indirect
 	github.com/go-chi/cors v1.2.2 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
